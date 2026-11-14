@@ -4,6 +4,21 @@ NearVerse is an English-language space exploration interface for real swaps thro
 
 The application uses React, TypeScript and Vite, with a small Node/SQLite history backend. Aurora Intents core is pinned to 7.29.0 and the supported NEAR connector to 0.6.11. The existing standalone package remains locked for reproducibility but is not imported into the runtime. The map has an equivalent keyboard-accessible destination list, system illustrations have text descriptions, and expeditions resume from their saved timestamps.
 
+## NEAR HACKATHON: Build Beyond Boundaries
+
+Live application: [nearverse.space](https://nearverse.space).
+
+NearVerse was developed for the November 2026 NEAR HACKATHON. Local development history runs from November 8 to November 14, 2026; the public repository contains a consolidated source snapshot rather than that development history. The application turns real NEAR Intents swaps into passages between fictional asset regions, then lets users explore stories without additional swaps. NEAR provides the account identity; NEAR Intents and Aurora's integration provide quotes, asset conversion and settlement. This is an interface built on existing infrastructure, not a new exchange protocol.
+
+Third-party foundations include React, Vite, Aurora Intents core and the supported NEAR connector; exact dependencies and versions are recorded in `package.json` and `package-lock.json`. NearVerse's application code is available under the [MIT License](LICENSE); dependencies retain their own licenses.
+
+### A short path for judges
+
+1. Open the live application and select **Isolated preview**. This mode uses practice state, not real funds or a completed swap.
+2. Select a beacon from the keyboard-accessible destination list. The selected system and its illustration/story heading change.
+3. Start an expedition, reload, and return after its timer. Complete the expedition to reveal its next story chapter and journal entry.
+4. The live mode exposes the separate wallet/quote/consent flow. Read the financial safety section before using it: a quote, signed deposit or preview journey is not proof of final settlement. Real swaps require the user's own authorization and funds.
+
 ## Setup
 
 Use Node 22 and npm 10 on a dedicated development/build machine with sufficient memory. Dependency installation, the complete test suite and production bundling are resource-intensive: do not run them on a shared production host. The build's 4096 MiB JavaScript heap limit does not bound all subprocess memory.
