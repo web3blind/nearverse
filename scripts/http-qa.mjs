@@ -1,0 +1,10 @@
+import assert from 'node:assert/strict';
+import http from 'node:http';
+const origin='http://127.0.0.1:4319';const checks=[];
+const index=await fetch(origin);assert.equal(index.status,200);assert(index.headers.get('content-type').includes('text/html'));assert(index.headers.get('content-security-policy').includes("object-src 'none'"));assert.equal(index.headers.get('cache-control'),'no-store');checks.push('index MIME/CSP/no-store');
+const text=await index.text();const path=text.match(/<script[^>]+src="([^"]+)"/)[1];const script=await fetch(origin+path);assert.equal(script.status,200);assert(script.headers.get('content-type').includes('javascript'));checks.push('compiled module MIME');
+const health=await fetch(origin+'/api/health');assert.deepEqual(await health.json(),{ok:true});assert.equal(health.headers.get('cache-control'),'no-store');checks.push('API health/no-store');
+assert.equal((await fetch(origin+'/api/journal')).status,401);checks.push('private journal requires authentication');
+assert.equal((await fetch(origin+'/api/journal',{headers:{Origin:'https://untrusted.invalid'}})).status,403);checks.push('foreign Origin rejected');
+for(const path of ['/%2e%2e/README.md','/.env','/plan.md','/server/app.ts']){const code=await new Promise((resolve,reject)=>{const request=http.request({hostname:'127.0.0.1',port:4319,path},response=>{response.resume();response.on('end',()=>resolve(response.statusCode));});request.on('error',reject);request.end();});assert.equal(code,404,path);}checks.push('path traversal/source/dotfile requests rejected');
+console.log(JSON.stringify({origin,checks},null,2));
