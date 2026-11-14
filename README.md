@@ -84,3 +84,7 @@ Verify the public HTTPS HTML, language/title, hashed assets and their content ha
 - [NEAR Intents React integration](https://docs.near-intents.org/integration/devkit/react-widget)
 - [Aurora integration packages](https://github.com/aurora-is-near/intents-swap-widget)
 - [Aurora API keys and fees](https://docs.intents.aurora.dev/getting-started/api-keys-and-fees)
+
+## License
+
+MIT. See [LICENSE](LICENSE).
