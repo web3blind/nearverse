@@ -27,7 +27,7 @@ export function HeadlessConverter({ onRecoveryActivated,activationRecoveryEntrie
   const activeSigning=useRef<{journey:PendingJourney;source:Token;deadline:string;current:()=>boolean;wallet?:NearWalletBase}|null>(null);
   const providers=useMemo(()=>({...config.providers,near:config.providers?.near?()=>{
     const active=activeSigning.current;if(!active)throw new Error('No approved transaction is available for signing.');
-    return active.wallet ??= guardedNearWallet(config.providers!.near!(),active.journey,active.source,active.deadline,active.current);
+    return active.wallet ??= guardedNearWallet(config.providers!.near!(),active.journey,active.source,active.deadline,active.current,open=>{walletOpen.current=open;});
   }:undefined}),[config.providers]);
   const {make:makeTransfer} = useMakeTransfer({providers,plugins:config.plugins});
   const {intentsAccountType}=useIntentsAccountType();
@@ -43,6 +43,7 @@ export function HeadlessConverter({ onRecoveryActivated,activationRecoveryEntrie
   const historySessionRef = useRef(onHistorySession); historySessionRef.current = onHistorySession;
   const [recoveryBlocked,setRecoveryBlocked] = useState(false);
   const transferLock = useRef(false);
+  const walletOpen = useRef(false);
   const identityKey = `${preview}:${account ?? ''}`;
   const identity = useRef({key:identityKey,version:0});
   if(identity.current.key !== identityKey) identity.current={key:identityKey,version:identity.current.version+1};
@@ -57,7 +58,10 @@ export function HeadlessConverter({ onRecoveryActivated,activationRecoveryEntrie
   // checkbox reset after committing that attempt must not revoke its permission.
   const consentRevocation=useRef(0);
   const previousConditions=useRef({quote:ctx.quote,systemId,targetAsset});
-  if(previousConditions.current.quote!==ctx.quote || previousConditions.current.systemId!==systemId || previousConditions.current.targetAsset!==targetAsset){consentGeneration.current++;previousConditions.current={quote:ctx.quote,systemId,targetAsset};}
+  // A background quote refetch (every 15 s) must not discard a signature the wallet is already showing:
+  // the journey is bound to the deposit address and amount being signed. Screen-reader users often need
+  // longer than one refetch to confirm. Before the wallet opens, a replaced quote still blocks signing.
+  if(!walletOpen.current && (previousConditions.current.quote!==ctx.quote || previousConditions.current.systemId!==systemId || previousConditions.current.targetAsset!==targetAsset)){consentGeneration.current++;previousConditions.current={quote:ctx.quote,systemId,targetAsset};}
   const markerKey=(owner:string)=>`nearverse:journal-deleted:${owner}`;
   const pendingKey=(owner:string)=>`nearverse:pending:${owner}`;
 

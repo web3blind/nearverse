@@ -27,6 +27,16 @@ describe('guard the exact SDK signing boundary',()=>{
  it('fails before wallet invocation on mismatched intent or stale generation',async()=>{const provider={signMessage:vi.fn(),signAndSendTransactions:vi.fn()};const w=guardedNearWallet(provider,j,{...source,isIntent:true},deadline,()=>true);await expect(w.signMessage({...intent(),recipient:'other.near'})).rejects.toThrow();expect(provider.signMessage).not.toHaveBeenCalled();await expect(guardedNearWallet(provider,j,source,deadline,()=>false).signAndSendTransactions(nativeTx())).rejects.toThrow();expect(provider.signAndSendTransactions).not.toHaveBeenCalled();});
 });
 describe('wallet response remains bound to the current operation',()=>{
+ it('reports while the wallet prompt is open so a background quote refetch cannot discard the signature',async()=>{
+  vi.stubGlobal('fetch',vi.fn(async(_url,init)=>{const {method}=JSON.parse(String(init.body));const result=method==='gas_price'?{gas_price:'1'}:method==='EXPERIMENTAL_protocol_config'?{runtime_config:{storage_amount_per_byte:'0'}}:{amount:state.amount,locked:'0',storage_usage:0};return {ok:true,json:async()=>({result})};}));
+  try{
+   const seen:boolean[]=[];let during=false;
+   const fixture={accountId:j.accountId,publicKey:'k',signature:'s'};
+   const provider={signMessage:vi.fn(async()=>{during=seen.at(-1)===true;return fixture;}),signAndSendTransactions:vi.fn()};
+   await expect(guardedNearWallet(provider,j,{...source,isIntent:true},deadline,()=>true,open=>seen.push(open)).signMessage(intent())).resolves.toBe(fixture);
+   expect(during).toBe(true);expect(seen).toEqual([true,false]);
+  }finally{vi.unstubAllGlobals();}
+ });
  it.each(['revoked','expired','current'] as const)('checks the operation after an awaited wallet signature: %s',async(mode)=>{
   type Signed=Awaited<ReturnType<ReturnType<typeof guardedNearWallet>['signMessage']>>;
   let release!:(value:Signed)=>void;let requested!:()=>void;

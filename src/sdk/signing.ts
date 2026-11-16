@@ -77,11 +77,12 @@ export function commitBudget(storage:Pick<Storage,'getItem'|'setItem'>,account:s
  const next=integer(ledger.spent)+cost;if(cost<0n)throw Error('Invalid operation cost.');
  ledger.operations[id]=cost.toString();ledger.spent=next.toString();storage.setItem(key,JSON.stringify(ledger));
 }
-export function guardedNearWallet(provider:NearWalletBase,j:PendingJourney,source:Token,deadline:string,isCurrent:()=>boolean):NearWalletBase {
+export function guardedNearWallet(provider:NearWalletBase,j:PendingJourney,source:Token,deadline:string,isCurrent:()=>boolean,onWallet:(open:boolean)=>void=()=>{}):NearWalletBase {
+ const inWallet=async<T>(work:()=>Promise<T>)=>{onWallet(true);try{return await work();}finally{onWallet(false);}};
  let authenticatedKey:string|undefined;
  const ensure=()=>{if(!isCurrent()||!(Date.parse(deadline)>Date.now()))throw Error('Transaction terms have changed or expired. Signing is blocked.');};
  return {
-  async signMessage(params){ensure();if(!source.isIntent)throw Error('Intents signing is prohibited for an external deposit.');validateIntent(params,j,deadline);reserveCost(await readReserve(j.accountId),0n);ensure();const signed=await provider.signMessage(params);ensure();if(signed.accountId!==j.accountId)throw Error('The wallet signed with a different account.');if(params.message==='Authenticate')authenticatedKey=signed.publicKey;return signed;},
+  async signMessage(params){ensure();if(!source.isIntent)throw Error('Intents signing is prohibited for an external deposit.');validateIntent(params,j,deadline);reserveCost(await readReserve(j.accountId),0n);ensure();const signed=await inWallet(()=>provider.signMessage(params));ensure();if(signed.accountId!==j.accountId)throw Error('The wallet signed with a different account.');if(params.message==='Authenticate')authenticatedKey=signed.publicKey;return signed;},
   async signAndSendTransactions(params){ensure();const cost=transactionCost(params,j,source);const first=params.transactions[0].actions[0];if(source.isIntent&&first.type==='FunctionCall'&&authenticatedKey&&first.params.args.public_key!==authenticatedKey)throw Error('A different public key is being registered.');
    if(source.isIntent && first.type==='FunctionCall'){
     // The SDK may restore its public-key cache without calling Authenticate.
