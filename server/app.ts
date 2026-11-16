@@ -1,6 +1,6 @@
 import express, { type Request, type Response, type NextFunction } from 'express';
 import type Database from 'better-sqlite3';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { bounded, digest, ownershipVerifier, token, verifySignature, type Challenge } from './auth';
 import { openStore } from './store';
 import { historySystems, homeSystemId } from './world';
@@ -10,6 +10,8 @@ export interface HistorySystem { id: string; assetId: string; stories: { id: str
 export interface AppOptions {
   origin: string; db?: Database.Database; now?: () => number; secureCookies?: boolean;
   systems?: HistorySystem[]; homeSystemId?: string;
+  /** Shared with the MCP module only; without it, agent grants are disabled. */
+  agentLinkSecret?: string;
   verifyOwnership?: (owner: string, publicKey: string) => Promise<boolean>;
   verifyArrival?: ArrivalVerifier;
 }
@@ -30,6 +32,11 @@ export function createApp(options: AppOptions) {
   const owns = options.verifyOwnership ?? ownershipVerifier(); const arrives = options.verifyArrival ?? verifyArrival;
   const systems = options.systems ?? historySystems; const home = options.homeSystemId ?? homeSystemId; const app = express(); app.disable('x-powered-by');
   const rates = new Map<string, { count: number; until: number }>();
+  const linkSecret = options.agentLinkSecret && options.agentLinkSecret.length >= 32 ? Buffer.from(options.agentLinkSecret) : undefined;
+  const agentLink = (req: Request) => {
+    const given = req.headers['x-nearverse-agent-link'];
+    return !!linkSecret && typeof given === 'string' && given.length === linkSecret.length && timingSafeEqual(Buffer.from(given), linkSecret);
+  };
   app.use((req, res, next) => {
     res.set({ 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'none'; frame-ancestors 'none'" });
     const time = now();
@@ -62,11 +69,16 @@ export function createApp(options: AppOptions) {
   };
   app.get('/api/health', (_req, res) => { res.json({ ok: true }); });
   app.post('/api/auth/challenge', (req, res) => {
-    if (!exact(req.body, ['accountId']) || typeof req.body.accountId !== 'string' || !accountPattern.test(req.body.accountId)) return fail(res, 400, 'invalid_account');
+    if (!exact(req.body, ['accountId', 'purpose']) || typeof req.body.accountId !== 'string' || !accountPattern.test(req.body.accountId)) return fail(res, 400, 'invalid_account');
+    // An agent grant is stated in the signed text and lasts longer than a browser sign-in.
+    if (req.body.purpose !== undefined && req.body.purpose !== 'agent') return fail(res, 400, 'invalid_purpose');
+    const agent = req.body.purpose === 'agent';
+    // Only the MCP module may request a 7-day agent grant, so a browser never gets a 7-day cookie.
+    if (agent && !agentLink(req)) return fail(res, 403, 'agent_link_only');
     if ((db.prepare('SELECT count(*) AS n FROM challenges').get() as { n: number }).n >= 1000) return fail(res, 429, 'challenge_limit');
     const expiresAt = now() + 5 * 60000; const id = token();
-    const challenge: Challenge = { id, accountId: req.body.accountId, recipient: new URL(origin).host, nonce: randomBytes(32).toString('base64'), expiresAt,
-      message: `Sign in to NearVerse history. No transaction or transfer.\nAccount: ${req.body.accountId}\nOrigin: ${origin}\nChallenge: ${id}\nExpires: ${new Date(expiresAt).toISOString()}` };
+    const challenge: Challenge = { id, accountId: req.body.accountId, recipient: new URL(origin).host, nonce: randomBytes(32).toString('base64'), expiresAt, ...(agent ? { purpose: 'agent' as const } : {}),
+      message: `${agent ? `Grant an AI agent access to your NearVerse journal for 7 days. Sign only on ${origin}/mcp/. No transaction or transfer.` : 'Sign in to NearVerse history. No transaction or transfer.'}\nAccount: ${req.body.accountId}\nOrigin: ${origin}\nChallenge: ${id}\nExpires: ${new Date(expiresAt).toISOString()}` };
     db.prepare('INSERT INTO challenges VALUES (?,?,?)').run(id, JSON.stringify(challenge), expiresAt); res.json(challenge);
   });
   app.post('/api/auth/verify', async (req, res) => {
@@ -75,16 +87,17 @@ export function createApp(options: AppOptions) {
     const row = db.prepare('DELETE FROM challenges WHERE id=? RETURNING value,expires').get(req.body.challengeId) as { value: string; expires: number } | undefined;
     if (!row || row.expires <= now()) return fail(res, 401, 'challenge_expired_or_used');
     const challenge = JSON.parse(row.value) as Challenge;
+    if (challenge.purpose === 'agent' && !agentLink(req)) return fail(res, 403, 'agent_link_only');
     const publicKey = req.body.publicKey as string; const signature = req.body.signature as string;
     if (req.body.accountId !== challenge.accountId || !verifySignature(challenge, publicKey, signature)) return fail(res, 401, 'invalid_signature');
     try { if (!await bounded(owns(challenge.accountId, publicKey))) return fail(res, 401, 'ownership'); }
     catch { return fail(res, 503, 'ownership_unavailable'); }
     if (challenge.expiresAt <= now()) return fail(res, 401, 'challenge_expired_or_used');
-    const raw = token(); const expiresAt = now() + 24 * 60 * 60000;
+    const raw = token(); const expiresAt = now() + (challenge.purpose === 'agent' ? 7 : 1) * 24 * 60 * 60000;
     const previous = (req.headers.cookie || '').split(';').map(s => s.trim().split('=')).find(([name]) => name === cookieName)?.[1];
     if (previous) db.prepare('DELETE FROM sessions WHERE id=?').run(digest(previous));
     db.prepare('INSERT INTO sessions VALUES (?,?,?)').run(digest(raw), challenge.accountId, expiresAt);
-    res.cookie(cookieName, raw, { ...cookieOptions, maxAge: expiresAt - now() }); res.json({ accountId: challenge.accountId, expiresAt });
+    res.cookie(cookieName, raw, { ...cookieOptions, maxAge: expiresAt - now() }); res.json({ accountId: challenge.accountId, expiresAt, purpose: challenge.purpose ?? 'site' });
   });
   app.get('/api/auth/session', (req, res) => { const value = session(req); res.json(value ? { accountId: value.owner, expiresAt: value.expires } : { accountId: null }); });
   app.post('/api/auth/logout', (req, res) => {
@@ -126,7 +139,7 @@ export function createApp(options: AppOptions) {
       const result = db.transaction(() => {
         const duplicate = existing(); if (duplicate) { if (duplicate.fingerprint !== fingerprint) throw new Error('event_id_conflict'); return duplicate; }
         const history = rows(owner); if (history.length >= 10000) throw new Error('journal_limit');
-        const visited = system.assetId === systems.find(s => s.id === home)?.assetId || history.some(e => e.type === 'arrival' && systems.find(s => s.id === e.systemId)?.assetId === system.assetId);
+        const visited = (!!home && system.assetId === systems.find(s => s.id === home)?.assetId) || history.some(e => e.type === 'arrival' && systems.find(s => s.id === e.systemId)?.assetId === system.assetId);
         const story = system.stories.find(s => s.id === body.storyId);
         const relevant = history.filter(e => e.systemId === system.id && e.storyId === body.storyId);
         let payload = '{}';

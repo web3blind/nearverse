@@ -8,16 +8,17 @@ The application uses React, TypeScript and Vite, with a small Node/SQLite histor
 
 Live application: [nearverse.space](https://nearverse.space).
 
-NearVerse was developed for the November 2026 NEAR HACKATHON. Local development history runs from November 8 to November 14, 2026; the public repository contains a consolidated source snapshot rather than that development history. The application turns real NEAR Intents swaps into passages between fictional asset regions, then lets users explore stories without additional swaps. NEAR provides the account identity; NEAR Intents and Aurora's integration provide quotes, asset conversion and settlement. This is an interface built on existing infrastructure, not a new exchange protocol.
+NearVerse was developed for the November 2026 NEAR HACKATHON. Local development history runs from November 8 to November 16, 2026; the public repository contains a consolidated source snapshot rather than that development history. The application turns real NEAR Intents swaps into passages between fictional asset regions: a system, its description and its story chapters open only after a real swap into its asset that the server verifies. NEAR provides the account identity; NEAR Intents and Aurora's integration provide quotes, asset conversion and settlement. This is an interface built on existing infrastructure, not a new exchange protocol. AI agents can play the same game through a remote MCP server, with owner-set spending limits.
 
 Third-party foundations include React, Vite, Aurora Intents core and the supported NEAR connector; exact dependencies and versions are recorded in `package.json` and `package-lock.json`. NearVerse's application code is available under the [MIT License](LICENSE); dependencies retain their own licenses.
 
 ### A short path for judges
 
-1. Open the live application and select **Isolated preview**. This mode uses practice state, not real funds or a completed swap.
-2. Select a beacon from the keyboard-accessible destination list. The selected system and its illustration/story heading change.
-3. Start an expedition, reload, and return after its timer. Complete the expedition to reveal its next story chapter and journal entry.
-4. The live mode exposes the separate wallet/quote/consent flow. Read the financial safety section before using it: a quote, signed deposit or preview journey is not proof of final settlement. Real swaps require the user's own authorization and funds.
+1. Open the live application. Without a wallet, the atlas shows only system names and assets; there is no swap-free mode.
+2. Connect a NEAR wallet and sign in (a text message, not a transaction). Select a closed system from the keyboard-accessible destination list.
+3. In the Converter, swap a small amount (any amount is accepted) into that system's asset. Read the financial safety section first: a quote or a signed deposit is not proof of settlement, and real swaps use your own funds.
+4. After the server verifies the arrival, the system's description and first chapter unlock. Start an expedition, reload, and complete it after its timer to read the chapter.
+5. For agents: open [nearverse.space/mcp/](https://nearverse.space/mcp/), set limits, sign, and give the token to an MCP client. See "AI agents (MCP)" below and [llms.txt](https://nearverse.space/llms.txt).
 
 ## Setup
 
@@ -49,7 +50,7 @@ The committed `.npmrc` is required for lockfile-compatible peer resolution. Nati
 
 ## Preview and accessibility checks
 
-Select **Isolated preview** for exploration without connecting a wallet or making swaps. Practice progress is stored only on that device and never syncs to live history. Try editing the ship, starting an expedition, reloading and completing it after its timer. Select a destination from the text list and verify that focus moves to its heading. Check keyboard navigation, narrow screens and reduced-motion settings.
+There is no swap-free mode: every system, its description and its chapters open only after a real swap into the system's asset that the server verifies. Without a wallet, the atlas shows only system names and assets. With a wallet, try editing the ship, swapping a small amount, starting an expedition, reloading and completing it after its timer. Select a destination from the text list and verify that focus moves to its heading. Check keyboard navigation, narrow screens and reduced-motion settings.
 
 Export/import accepts bounded plain JSON for the same mode/account. Live imports change only local ship settings, never verified arrivals. User biographies are rendered as text, not HTML. Built-in ship art is used instead of arbitrary uploads.
 
@@ -99,6 +100,23 @@ Verify the public HTTPS HTML, language/title, hashed assets and their content ha
 - [NEAR Intents React integration](https://docs.near-intents.org/integration/devkit/react-widget)
 - [Aurora integration packages](https://github.com/aurora-is-near/intents-swap-widget)
 - [Aurora API keys and fees](https://docs.intents.aurora.dev/getting-started/api-keys-and-fees)
+
+## AI agents (MCP)
+
+NearVerse has an optional remote MCP server for AI agents at `https://nearverse.space/mcp` (Streamable HTTP, JSON responses).
+
+1. Open `https://nearverse.space/mcp/`, connect a NEAR wallet and sign a text message (no transaction).
+2. Copy the agent token or the ready MCP client configuration. The token gives access to that account's journal only, never to the wallet; it expires after 7 days and can be revoked on the same page. The signed text says that it grants an AI agent access.
+3. Set spending limits (per swap and per 24 hours, USD) before signing. Tools: `list_systems`, `list_swap_tokens`, `get_limits`, `get_swap_quote`, `verify_arrival`, `start_expedition`, `complete_expedition`, `read_story`, `get_journal`.
+4. Systems and chapters open for the agent only after a real swap into the system's asset: the agent gets a quote, signs the single deposit transaction with its own NEAR wallet tool (NearVerse never holds keys or funds), then calls `verify_arrival`; the main server verifies the arrival as for people.
+
+Limits are a safety rail, not custody: NearVerse refuses to prepare swaps above the owner's limits (summed per account across tokens), but an agent that can send deposits holds a key able to move all funds of that account. Give agents a separate account with a small balance.
+
+Agent grants: the page requests the sign-in text through the module (`POST /mcp/api/challenge`), and the history server issues a 7-day agent challenge only when the request carries the shared `AGENT_LINK_SECRET` (set the same value, at least 32 characters, for both services). A browser therefore never gets a 7-day cookie, and an ordinary site sign-in cannot become an agent token. `DELETE /mcp/api/link?all=1` revokes every agent token of the account; any holder of one token can do this, which at worst cuts off that account's other agents. The MCP client must support custom headers (Bearer token); OAuth discovery is not offered.
+
+Deployment: proxy `location = /mcp` and `location ^~ /mcp/` to the module with `proxy_set_header X-Real-IP $remote_addr;` (the module trusts that header from loopback for per-client limits; without this line clients could bypass them), and run it with `Restart=on-failure`. `HISTORY_API` must be a loopback URL.
+
+The module is isolated from the site: it runs as its own process (`npm run mcp`, port 4320, own SQLite file `MCP_DB`, required `MCP_SECRET` = 64 hex characters, `AGENT_LINK_SECRET`) and talks to the history API only through its public HTTP contract. Stopping it does not affect the site. Build the page with `npm run build:mcp` (output `dist-mcp/`).
 
 ## License
 

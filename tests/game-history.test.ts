@@ -16,6 +16,8 @@ async function setup() {
   const db = openStore(); let time = 100000;
   const sessionToken = 'a'.repeat(43);
   db.prepare('INSERT INTO sessions VALUES (?,?,?)').run(digest(sessionToken), 'alice.near', time + 1000000);
+  // Fixture: a server-verified arrival in Lada (there is no free home system).
+  db.prepare('INSERT INTO events(owner,eventId,type,systemId,storyId,createdAt,payload,fingerprint,operation) VALUES (?,?,?,?,?,?,?,?,?)').run('alice.near', 'arrival-1', 'arrival', 'near-lada', null, time - 1, '{}', 'fixture', 'fixture-op');
   // A pre-created session is an explicit test fixture. No real wallet, signature, RPC or swap.
   const app = createApp({ origin: 'http://127.0.0.1', db, now: () => time });
   server = app.listen(0, '127.0.0.1');
@@ -28,30 +30,31 @@ async function setup() {
   return { store, db, setTime(value: number) { time = value; } };
 }
 describe('game cache → actual HTTP history API → SQLite (controlled authenticated session)', () => {
-  it('starts at home without swap, uses server time, completes and reads in order', async () => {
+  it('starts after a verified arrival, uses server time, completes and reads in order', async () => {
     const { store, db, setTime } = await setup();
     try {
       const empty = await store.sync(account, historyTransport);
-      expect(empty.events).toEqual([]);
+      expect(empty.events.map(e => e.type)).toEqual(['arrival']);
       await store.append(account, { eventId: 'start-1', type: 'expedition.started', systemId: 'near-lada', storyId: 'lada-1', createdAt: 1 });
       const started = await store.sync(account, historyTransport);
       expect(started.queue).toEqual([]);
-      expect(started.events[0]).toMatchObject({ createdAt: 100000, readyAt: 115000 });
+      expect(started.events[1]).toMatchObject({ createdAt: 100000, readyAt: 115000 });
       setTime(115000);
       await store.append(account, { eventId: 'complete-1', type: 'expedition.completed', systemId: 'near-lada', storyId: 'lada-1', createdAt: 2 });
       await store.sync(account, historyTransport);
       await store.append(account, { eventId: 'read-1', type: 'story.read', systemId: 'near-lada', storyId: 'lada-1', createdAt: 3 });
       const complete = await store.sync(account, historyTransport);
       expect(complete.queue).toEqual([]);
-      expect(complete.events.map(event => event.type)).toEqual(['expedition.started', 'expedition.completed', 'story.read']);
-      expect(db.prepare('SELECT count(*) AS n FROM events').get()).toEqual({ n: 3 });
+      expect(complete.events.map(event => event.type)).toEqual(['arrival', 'expedition.started', 'expedition.completed', 'story.read']);
+      expect(db.prepare('SELECT count(*) AS n FROM events').get()).toEqual({ n: 4 });
       await store.sync(account, historyTransport);
-      expect(db.prepare('SELECT count(*) AS n FROM events').get()).toEqual({ n: 3 });
+      expect(db.prepare('SELECT count(*) AS n FROM events').get()).toEqual({ n: 4 });
     } finally { db.close(); }
   });
   it('does not trust the local completion timer and retains a rejected completion for retry', async () => {
     const { store, db, setTime } = await setup();
     try {
+      await store.sync(account, historyTransport);
       await store.append(account, { eventId: 'start', type: 'expedition.started', systemId: 'near-lada', storyId: 'lada-1', createdAt: 0 });
       await store.sync(account, historyTransport);
       await store.append(account, { eventId: 'finish', type: 'expedition.completed', systemId: 'near-lada', storyId: 'lada-1', createdAt: 999999999 });
@@ -66,11 +69,12 @@ describe('game cache → actual HTTP history API → SQLite (controlled authenti
     const { store, db, setTime } = await setup();
     try {
       await expect(historyTransport.read('bob.near')).rejects.toThrow('another account');
+      await store.sync(account, historyTransport);
       await store.append(account, { eventId: 'waiting', type: 'expedition.started', systemId: 'near-lada', storyId: 'lada-1', createdAt: 0 });
       setTime(2000000);
       await expect(store.sync(account, historyTransport)).rejects.toThrow('separate sign-in');
       expect((await store.load(account)).queue).toEqual(['waiting']);
-      expect(db.prepare('SELECT count(*) AS n FROM events').get()).toEqual({ n: 0 });
+      expect(db.prepare('SELECT count(*) AS n FROM events').get()).toEqual({ n: 1 });
     } finally { db.close(); }
   });
 });

@@ -6,4 +6,5 @@ export const historySystems: HistorySystem[] = systems.map(system => ({
     id: story.id, durationMs: story.durationSeconds * 1000, requires: index ? [system.stories[index - 1].id] : [],
   })),
 }));
-export const homeSystemId = 'near-lada';
+// No free home system: every system opens only after a verified swap.
+export const homeSystemId = '';

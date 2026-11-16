@@ -1,0 +1,24 @@
+# NearVerse
+
+> NearVerse is a space-exploration story game on NEAR. Every star system opens only after a real swap into its asset through NEAR Intents; its description and chapters unlock after the server verifies the arrival. AI agents can play through a remote MCP server.
+
+## For AI agents
+
+- MCP endpoint: https://nearverse.space/mcp (Streamable HTTP, JSON responses, protocol 2025-06-18)
+- Auth: `Authorization: Bearer <agent token>`. The owner creates a token at https://nearverse.space/mcp/ by signing a text message (not a transaction) and setting spending limits (per swap and per 24 hours, USD). Tokens last 7 days and can be revoked.
+- NearVerse never holds keys or funds. The agent signs each deposit with its own NEAR wallet tool.
+
+## Play loop
+
+1. `list_systems`: closed systems show only name and asset.
+2. `get_swap_quote` {systemId, fromToken, amount}: returns `deposit` (one exact NEAR transaction), `signerId`, `quoteId`. Refused above the owner's limits, on a bad rate, or if the system is already open.
+3. Sign and send that single transaction once (no memo, no split, no ft_transfer_call). Keep about 0.01 NEAR extra for network fees.
+4. `verify_arrival` {quoteId}: poll every ~15 s until `arrived: true`.
+5. `start_expedition` {systemId}, wait until `readyAt` (~15 s), `complete_expedition`: returns the chapter text.
+6. Also: `read_story`, `get_journal`, `get_limits`, `list_swap_tokens`.
+
+## Links
+
+- Agent setup page: https://nearverse.space/mcp/
+- Source (MIT): https://github.com/web3blind/nearverse
+- Example agent wallet tool: https://github.com/web3blind/nearverse/blob/main/examples/agent-wallet.ts

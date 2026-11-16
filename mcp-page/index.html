@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NearVerse for AI agents (MCP)</title>
+  <meta name="description" content="Connect an AI agent to NearVerse through the Model Context Protocol.">
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <header><a href="/" class="brand">NearVerse</a><span>Agents</span></header>
+  <main id="main">
+    <h1>Play NearVerse with your AI agent</h1>
+    <p class="lead">NearVerse exposes a remote MCP server. Your agent can list star systems, run expeditions and read the chapters it unlocks, on behalf of your NEAR account.</p>
+
+    <section aria-labelledby="step1">
+      <h2 id="step1">1. Sign in with your NEAR account</h2>
+      <p>You sign a text message. It is not a transaction and moves no funds.</p>
+      <p id="limitsHelp">Set what your agent may spend on swaps. NearVerse never holds your keys or funds: your agent signs each deposit with its own wallet tool. NearVerse refuses to prepare swaps above these limits, counted for the whole account across all its tokens. Important: to send deposits the agent needs a key that can move all funds of this account, so these limits do not restrict what the agent can sign on its own. Use a separate account with a small balance for your agent.</p>
+      <label for="perSwap">Limit per swap, US dollars</label>
+      <input id="perSwap" aria-describedby="limitsHelp limitsError" aria-errormessage="limitsError" type="number" inputmode="decimal" min="0" max="10000" step="0.01" value="5">
+      <label for="daily">Limit per 24 hours, US dollars</label>
+      <input id="daily" aria-describedby="limitsHelp limitsError" aria-errormessage="limitsError" type="number" inputmode="decimal" min="0" max="10000" step="0.01" value="20">
+      <p id="limitsError" class="error"></p>
+      <div id="wallets" class="actions" role="group" aria-label="NEAR wallets"><button type="button" id="connect">Connect NEAR wallet</button></div>
+      <p id="status" role="status" aria-live="polite" tabindex="-1"></p>
+    </section>
+
+    <section aria-labelledby="step2" id="result" hidden>
+      <h2 id="step2" tabindex="-1">2. Your agent token</h2>
+      <p>Shown once. It gives access to your NearVerse journal only, not to your wallet or funds. It expires in 7 days, at <span id="expires"></span>. Swap limits: <span id="limits"></span>.</p>
+      <label for="token">Agent token for <span id="account"></span></label>
+      <input id="token" readonly>
+      <div class="actions"><button type="button" id="copy">Copy token</button><button type="button" id="revoke">Revoke token</button><button type="button" id="revokeAll">Revoke all agent tokens of this account</button></div>
+      <h3>Configuration</h3>
+      <label for="config">MCP client configuration (JSON)</label>
+      <textarea id="config" readonly rows="10"></textarea>
+      <button type="button" id="copyConfig">Copy configuration</button>
+    </section>
+
+    <section aria-labelledby="tools">
+      <h2 id="tools">What the agent can do</h2>
+      <ul>
+        <li><code>list_systems</code>: star systems. A closed system shows only its name and asset.</li>
+        <li><code>get_swap_quote</code>: a NEAR Intents quote to travel to a system, within your limits, with the exact deposit transaction for the agent's own wallet.</li>
+        <li><code>verify_arrival</code>: confirms the swap; the system and its chapters open.</li>
+        <li><code>start_expedition</code> and <code>complete_expedition</code>: unlock the next chapter in a system reached by swap.</li>
+        <li><code>read_story</code>, <code>get_journal</code>, <code>get_limits</code>, <code>list_swap_tokens</code>.</li>
+      </ul>
+      <p>Chapters are available to the agent only in systems it reached by a real swap. Swapped funds stay in this account's NEAR Intents balance.</p>
+      <p>Endpoint: <code id="endpoint"></code>. Transport: Streamable HTTP. Authentication: <code>Authorization: Bearer &lt;token&gt;</code>.</p>
+    </section>
+  </main>
+  <script type="module" src="./main.ts"></script>
+</body>
+</html>

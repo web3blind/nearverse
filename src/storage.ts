@@ -68,7 +68,7 @@ export function validateSave(input: unknown, expectedScope: Scope): GameSave {
   return { version: 1, scope: { mode: scope.mode, account: scope.account }, ship: { name: text(ship.name, 60), biography: text(ship.biography, 2000, true), art: ship.art as Ship['art'] }, events, queue: scope.mode === 'preview' ? [] : [...new Set(value.queue as string[])] };
 }
 export function validateSequence(events: GameEvent[]): void {
-  const visited = new Set<string>(['near-lada']);
+  const visited = new Set<string>();
   const started = new Set<string>();
   const completed = new Set<string>();
   for (const event of events) {
@@ -108,7 +108,14 @@ export function createGameStorage(cache: Cache = indexedCache) {
   }
   async function load(scope: Scope): Promise<GameSave> {
     const value = await cache.get(scopeKey(scope));
-    return value === undefined ? emptySave(scope) : validateSave(value, scope);
+    if (value === undefined) return emptySave(scope);
+    try { return validateSave(value, scope); }
+    catch (error) {
+      // A real-mode cache from before swap-only rules (free Lada chapters) no longer validates.
+      // The server journal is the source of truth: drop the cached events, keep the ship.
+      if (scope.mode !== 'real' || !value || typeof value !== 'object') throw error;
+      return validateSave({ ...(value as object), events: [], queue: [] }, scope);
+    }
   }
   return {
     load(scope: Scope) { return serial(() => load(scope)); },
@@ -194,7 +201,7 @@ export function progress(save: GameSave, systemId: string) {
   const completed = new Set(save.events.filter(event => event.type === 'story.read').map(event => event.storyId));
   const next = system.stories.find(story => !completed.has(story.id));
   const active = next ? save.events.find(event => event.type === 'expedition.started' && event.storyId === next.id) : undefined;
-  return { visited: system.asset === getSystem('near-lada').asset || save.events.some(event => ['visit', 'arrival'].includes(event.type) && getSystem(event.systemId).asset === system.asset), completed, next, active };
+  return { visited: save.events.some(event => ['visit', 'arrival'].includes(event.type) && getSystem(event.systemId).asset === system.asset), completed, next, active };
 }
 export function visitedCount(save: GameSave): number {
   return systems.filter(system => save.events.some(event => ['visit', 'arrival'].includes(event.type) && event.systemId === system.id)).length;

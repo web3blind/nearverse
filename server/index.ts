@@ -34,7 +34,7 @@ if (command === 'restore') {
       next();
     });
     if(command === 'preview') app.use(frontend());
-    app.use(createApp({ origin, db }));
+    app.use(createApp({ origin, db, agentLinkSecret: process.env.AGENT_LINK_SECRET }));
     const server = app.listen(port, '127.0.0.1', () => console.log(`History backend listening on 127.0.0.1:${port}`));
     for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => server.close(() => { db.close(); process.exit(0); }));
   }

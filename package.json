@@ -12,7 +12,9 @@
     "test:icons": "node --max-old-space-size=128 scripts/check-material-icons.mjs",
     "server": "tsx server/index.ts",
     "preview": "tsx server/index.ts preview",
-    "test:browser": "node scripts/browser-qa.mjs"
+    "test:browser": "node scripts/browser-qa.mjs",
+    "mcp": "tsx mcp/index.ts",
+    "build:mcp": "vite build -c vite.mcp.config.ts"
   },
   "dependencies": {
     "@aurora-is-near/intents-swap-widget": "7.29.0",

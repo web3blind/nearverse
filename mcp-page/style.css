@@ -1,0 +1,17 @@
+:root{color-scheme:dark;--bg:#0f1b22;--panel:#172731;--text:#e9eee9;--muted:#b9c7c8;--accent:#e5bd81;--border:#33505c}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:1rem/1.6 system-ui,sans-serif}
+.skip{position:absolute;left:-999px}.skip:focus{left:16px;top:16px;background:var(--accent);color:#111;padding:8px}
+header{display:flex;gap:12px;align-items:baseline;padding:18px 24px;border-bottom:1px solid var(--border)}
+.brand{color:var(--accent);font-weight:700;font-size:1.2rem;text-decoration:none}
+main{max-width:760px;margin:0 auto;padding:24px}
+h1{font-size:1.9rem;line-height:1.25}.lead{color:var(--muted);font-size:1.08rem}
+section{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:20px;margin:22px 0}
+.actions{display:flex;flex-wrap:wrap;gap:10px;margin:12px 0}
+button{background:var(--accent);color:#14212a;border:0;border-radius:6px;padding:11px 16px;font:inherit;font-weight:600;cursor:pointer;min-height:44px}
+button.secondary{background:transparent;color:var(--text);border:1px solid var(--accent)}
+button:disabled{opacity:.6;cursor:wait}
+button:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible{outline:3px solid #fff;outline-offset:2px}
+input,textarea{width:100%;background:#0b141a;color:var(--text);border:1px solid var(--border);border-radius:6px;padding:10px;font:0.95rem ui-monospace,monospace}
+label{display:block;margin:12px 0 6px;color:var(--muted)}
+a{color:var(--accent)}code{color:#f1d6a6}

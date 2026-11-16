@@ -32,7 +32,7 @@ async function login(accountId = 'alice.near') {
 }
 async function start(overrides: Partial<AppOptions> = {}) {
   time = 1800000000000; db = openStore(); owns = vi.fn(async () => true); arrives = vi.fn(async () => true);
-  server = createApp({ origin, db, now: () => time, verifyOwnership: owns, verifyArrival: arrives, ...overrides }).listen(0,'127.0.0.1');
+  server = createApp({ origin, db, now: () => time, verifyOwnership: owns, verifyArrival: arrives, homeSystemId: 'near-lada', ...overrides }).listen(0,'127.0.0.1');
   await once(server,'listening'); base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
 }
 beforeEach(async () => { await start(); });
@@ -46,6 +46,13 @@ describe('history HTTP security and ordering', () => {
     expect((await request('/api/auth/challenge','POST',{accountId:'alice.near'},undefined,null)).status).toBe(403);
     expect((await request('/api/auth/challenge','POST',{accountId:'alice.near'},undefined,'https://evil.test')).status).toBe(403);
     expect((await request('/api/events','GET',undefined,undefined,'https://evil.test')).status).toBe(403);
+  });
+  it('has no free home system by default: every chapter needs a verified arrival', async () => {
+    server.closeAllConnections(); await new Promise<void>(r => server.close(() => r())); db.close();
+    await start({ homeSystemId: undefined });
+    const { cookie } = await login();
+    const r = await request('/api/events','POST',event('e1','expedition.started'),cookie);
+    expect(r.status).toBe(409);
   });
   it('real NEP-413 signatures, nonce/domain binding, one-use and cookie revocation', async () => {
     const { cookie, body, challenge, response } = await login();

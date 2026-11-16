@@ -22,6 +22,10 @@
   "include": [
     "src",
     "server",
+    "mcp",
+    "examples",
+    "mcp-page",
+    "vite.mcp.config.ts",
     "tests",
     "vite.config.ts"
   ]

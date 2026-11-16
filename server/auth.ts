@@ -3,7 +3,7 @@ import { PublicKey } from '@near-js/crypto';
 import { JsonRpcProvider } from '@near-js/providers';
 import { serialize } from 'borsh';
 
-export interface Challenge { id: string; accountId: string; message: string; nonce: string; recipient: string; expiresAt: number }
+export interface Challenge { id: string; accountId: string; message: string; nonce: string; recipient: string; expiresAt: number; purpose?: 'agent' }
 export const token = () => randomBytes(32).toString('base64url');
 export const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 export function nep413Hash(challenge: Challenge): Uint8Array {

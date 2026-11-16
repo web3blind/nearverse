@@ -7,9 +7,9 @@ Run `npm run server`: loopback `127.0.0.1:4318`, matching Vite's proxy; default 
 ## Auth (no financial transaction)
 
 - `GET /api/health` → `{ok:true}`.
-- `POST /api/auth/challenge` `{accountId}` → `{id,accountId,message,nonce,recipient,expiresAt}`. `nonce` is base64 encoding of exactly 32 bytes; `recipient` is the configured origin's host. Expiry is server epoch milliseconds (5 minutes).
+- `POST /api/auth/challenge` `{accountId, purpose?: 'agent'}` → `{id,accountId,message,nonce,recipient,expiresAt}`. `nonce` is base64 encoding of exactly 32 bytes; `recipient` is the configured origin's host. Expiry is server epoch milliseconds (5 minutes). `purpose: 'agent'` is accepted only with header `X-NearVerse-Agent-Link` equal to the `AGENT_LINK_SECRET` the server was started with (else 403 `agent_link_only`); its message says it grants an AI agent access for 7 days.
 - Have the existing wallet sign the exact NEP-413 message / nonce / recipient, **without callbackUrl**. Do not sign a transfer or ask for a private key.
-- `POST /api/auth/verify` `{challengeId,accountId,publicKey,signature}`; signature is canonical base64 of 64-byte Ed25519 signature. Response `{accountId,expiresAt}` sets HttpOnly, SameSite=Strict cookie (24 hours). Restricted function-call access keys are not accepted as whole-account ownership. Challenges are consumed on the first verification attempt, including failure.
+- `POST /api/auth/verify` `{challengeId,accountId,publicKey,signature}`; signature is canonical base64 of 64-byte Ed25519 signature. Response `{accountId,expiresAt}` sets HttpOnly, SameSite=Strict cookie (24 hours; 7 days for an agent challenge, which also needs the agent-link header). The response also has `purpose`: `site` or `agent`. Restricted function-call access keys are not accepted as whole-account ownership. Challenges are consumed on the first verification attempt, including failure.
 - `GET /api/auth/session` → `{accountId,expiresAt}` or `{accountId:null}`.
 - `POST /api/auth/logout` `{}` → `{ok:true}`, revokes the presented cookie.
 
@@ -19,7 +19,7 @@ Run `npm run server`: loopback `127.0.0.1:4318`, matching Vite's proxy; default 
 
 Types:
 - `arrival`: `systemId`, no `storyId`, required `proof` below. No history is written unless upstream verification succeeds. Use the same eventId for retry; rejected/pending arrival remains a client-side pending operation, not a fabricated successful event.
-- `expedition.started`: `systemId,storyId`; requires an arrival in the same asset region (the home NEAR region is initially available), predecessor read, and no other active expedition. Response includes server `readyAt`.
+- `expedition.started`: `systemId,storyId`; requires an arrival in the same asset region (there is no free home region; `homeSystemId` defaults to empty), predecessor read, and no other active expedition. Response includes server `readyAt`.
 - `expedition.completed`: same IDs, requires matching start and server time >= readyAt.
 - `story.read`: same IDs, requires completion.
 
