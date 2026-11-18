@@ -4,6 +4,7 @@
 //   NEAR_KEY_FILE=key.json npx tsx examples/agent-wallet.ts link 1 2      # sign in, print agent token (limits: $1 per swap, $2 per day)
 //   NEAR_KEY_FILE=key.json npx tsx examples/agent-wallet.ts send '<deposit JSON from get_swap_quote>'
 //   NEAR_KEY_FILE=key.json npx tsx examples/agent-wallet.ts balance
+//   NEAR_KEY_FILE=key.json npx tsx examples/agent-wallet.ts ship '{"name":"...","biography":"...","art":"courier"}'   # optional public copy on social.near
 //
 // key.json: {"account_id": "...", "private_key": "ed25519:..."}
 import { readFileSync } from 'node:fs';
@@ -13,6 +14,7 @@ import { actionCreators, createTransaction, Signature, SignedTransaction, encode
 import { baseDecode } from '@near-js/utils';
 import { createHash } from 'node:crypto';
 import { nep413Hash, type Challenge } from '../server/auth';
+import { readOnChainShip, readSocialStorage, shipData, shipDeposit, SHIP_GAS, SOCIAL_CONTRACT } from '../src/social';
 
 const SITE = process.env.NEARVERSE_URL || 'https://nearverse.space';
 const RPC = process.env.NEAR_RPC || 'https://rpc.mainnet.near.org';
@@ -35,10 +37,17 @@ async function link(perSwapUsd: number, dailyUsd: number) {
   return data;
 }
 
-async function send(deposit: Deposit) {
+async function send(input: Deposit | { preferred: Deposit }) {
+  // Accept the whole `deposit` object from get_swap_quote and use its preferred transaction.
+  const deposit = 'preferred' in input ? input.preferred : input;
   // Refuse anything but the two shapes NearVerse issues: one native transfer, or storage_deposit + ft_transfer.
   const shape = deposit.actions.map(a => a.type === 'Transfer' ? 'Transfer' : a.methodName).join(',');
   if (!['Transfer', 'ft_transfer', 'storage_deposit,ft_transfer'].includes(shape)) throw new Error('unexpected deposit shape: ' + shape);
+  return signAndSend(deposit.receiverId, deposit.actions);
+}
+
+async function signAndSend(receiverId: string, actionList: Action[]) {
+  const deposit = { receiverId, actions: actionList };
   const access = await rpc.viewAccessKey(account, pair.getPublicKey(), { finality: 'final' });
   const block = await rpc.viewBlock({ finality: 'final' });
   const actions = deposit.actions.map(a => a.type === 'Transfer' ? actionCreators.transfer(BigInt(a.deposit))
@@ -50,9 +59,19 @@ async function send(deposit: Deposit) {
   return { hash: outcome.transaction.hash, status: Object.keys(outcome.status as object)[0] };
 }
 
+// Writes only <account>/nearverse/ship on social.near; the refundable storage deposit is computed from the data size.
+async function ship(raw: string) {
+  const value = JSON.parse(raw) as { name: string; biography: string; art: 'courier' | 'surveyor' | 'sail' };
+  const deposit = shipDeposit(account, value, await readSocialStorage(account));
+  if (deposit > 10n ** 23n) throw new Error('storage deposit above 0.1 NEAR: refusing');
+  const sent = await signAndSend(SOCIAL_CONTRACT, [{ type: 'FunctionCall', methodName: 'set', args: { data: shipData(account, value) }, gas: SHIP_GAS, deposit: deposit.toString() }]);
+  return { ...sent, depositNear: Number(deposit / 10n ** 18n) / 1e6, onChain: await readOnChainShip(account) };
+}
+
 const [cmd, a, b] = process.argv.slice(2);
 const run = cmd === 'link' ? link(Number(a ?? 1), Number(b ?? 2))
   : cmd === 'send' ? send(JSON.parse(a))
+  : cmd === 'ship' ? ship(a)
   : cmd === 'balance' ? rpc.query({ request_type: 'view_account', account_id: account, finality: 'final' }).then((v: any) => ({ account, near: Number(BigInt(v.amount) / 10n ** 18n) / 1e6 }))
-  : Promise.reject(new Error('usage: link <perSwapUsd> <dailyUsd> | send <deposit JSON> | balance'));
+  : Promise.reject(new Error('usage: link <perSwapUsd> <dailyUsd> | send <deposit JSON> | ship <ship JSON> | balance'));
 run.then(r => console.log(JSON.stringify(r))).catch(e => { console.error(String(e.message ?? e)); process.exit(1); });

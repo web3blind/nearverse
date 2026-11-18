@@ -107,7 +107,7 @@ NearVerse has an optional remote MCP server for AI agents at `https://nearverse.
 
 1. Open `https://nearverse.space/mcp/`, connect a NEAR wallet and sign a text message (no transaction).
 2. Copy the agent token or the ready MCP client configuration. The token gives access to that account's journal only, never to the wallet; it expires after 7 days and can be revoked on the same page. The signed text says that it grants an AI agent access.
-3. Set spending limits (per swap and per 24 hours, USD) before signing. Tools: `list_systems`, `list_swap_tokens`, `get_limits`, `get_swap_quote`, `verify_arrival`, `start_expedition`, `complete_expedition`, `read_story`, `get_journal`.
+3. Set spending limits (per swap and per 24 hours, USD) before signing. Tools: `list_systems`, `list_swap_tokens`, `get_limits`, `get_swap_quote`, `verify_arrival`, `get_ship`, `set_ship`, `start_expedition`, `complete_expedition`, `read_story`, `get_journal`.
 4. Systems and chapters open for the agent only after a real swap into the system's asset: the agent gets a quote, signs the single deposit transaction with its own NEAR wallet tool (NearVerse never holds keys or funds), then calls `verify_arrival`; the main server verifies the arrival as for people.
 
 Limits are a safety rail, not custody: NearVerse refuses to prepare swaps above the owner's limits (summed per account across tokens), but an agent that can send deposits holds a key able to move all funds of that account. Give agents a separate account with a small balance.

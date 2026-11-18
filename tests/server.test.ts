@@ -202,3 +202,31 @@ describe('upstream verification and backup', () => {
     } finally { rmSync(dir,{recursive:true,force:true}); }
   });
 });
+
+describe('ship profile', () => {
+  const ship = { name: 'Тихий странник', biography: 'Line one.\nLine two.', art: 'sail' };
+  it('stores one ship per signed-in account and keeps it after the journal is deleted', async () => {
+    expect((await request('/api/ship')).status).toBe(401);
+    const { cookie } = await login();
+    expect(await (await request('/api/ship', 'GET', undefined, cookie)).json()).toEqual({ ship: null });
+    const saved = await request('/api/ship', 'PUT', ship, cookie);
+    expect(saved.status).toBe(200);
+    expect((await saved.json()).ship).toMatchObject(ship);
+    expect((await request('/api/ship', 'PUT', { ...ship, name: 'Second' }, cookie)).status).toBe(200);
+    expect((await request('/api/journal', 'DELETE', {}, cookie)).status).toBe(200);
+    expect((await (await request('/api/ship', 'GET', undefined, cookie)).json()).ship.name).toBe('Second');
+    const other = await login('bob.near');
+    expect(await (await request('/api/ship', 'GET', undefined, other.cookie)).json()).toEqual({ ship: null });
+  });
+  it.each([
+    [{ ...ship, name: '' }], [{ ...ship, name: '   ' }], [{ ...ship, name: 'x'.repeat(61) }], [{ ...ship, name: 'a\nb' }],
+    [{ ...ship, biography: 'x'.repeat(2001) }], [{ ...ship, biography: 'bad\u0007' }], [{ ...ship, art: 'unknown' }], [{ ...ship, extra: 1 }], [{ name: 'x', art: 'sail' }],
+  ])('rejects an invalid ship %#', async body => {
+    const { cookie } = await login();
+    expect((await request('/api/ship', 'PUT', body, cookie)).status).toBe(400);
+  });
+  it('refuses a cross-site ship write', async () => {
+    const { cookie } = await login();
+    expect((await request('/api/ship', 'PUT', ship, cookie, 'https://evil.example')).status).toBe(403);
+  });
+});

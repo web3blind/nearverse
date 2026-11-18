@@ -35,6 +35,11 @@ Response `{event:{seq,eventId,type,systemId,storyId?,createdAt,readyAt?}}`: HTTP
 
 Limits: 8 KiB JSON body, 120 requests/minute per direct peer IP, 1,000 outstanding challenges globally, 10,000 events per owner, 5-second verifier deadlines. No trust-proxy is enabled; a future reverse proxy must explicitly provide a safe deployment-specific rate-limit identity before public use. These are MVP local-process limits, not distributed abuse protection. NEAR provider RPC requests have bounded HTTP-handler deadlines but the installed official provider does not expose cancellation of its underlying fetch. Arrival status fetch is aborted at 5 seconds and capped at 64 KiB. All API responses are no-store. No request bodies/signatures are logged.
 
+## Ship profile
+- `GET /api/ship` (session) → `{ship:{name,biography,art,updatedAt}|null}`.
+- `PUT /api/ship` (session, same-origin JSON) `{name,biography,art}` → `{ship}`. name 1–60 chars, one line; biography ≤ 2000 chars; art `courier|surveyor|sail`; control characters rejected (400 `invalid_ship`). One ship per account; deleting the journal keeps the ship.
+- Optional public copy: the player's own wallet calls `social.near` `set` for `<account>/nearverse/ship` with a refundable storage deposit (first write registers 0.02 NEAR of storage). NearVerse never signs it and runs no contract.
+
 ## SQLite maintenance
 
 Use a private destination directory. DB files are chmod 0600; runtime data directory is 0700. Schema version 2 adds journal revision fencing; version 1 backups remain accepted and migrate on subsequent open. Backup includes authentication tables, whose session IDs are hashed, and no signatures; retain backups with limited access and explicit retention.

@@ -23,6 +23,9 @@ export const toolDefinitions = [
   { name: 'start_expedition', description: 'Start the next chapter expedition in a system this account has arrived in by swap. Only one expedition can be active. Takes about 15 seconds.', inputSchema: { type: 'object', properties: { systemId: { type: 'string' } }, required: ['systemId'], additionalProperties: false } },
   { name: 'complete_expedition', description: 'Complete the active expedition when it is ready and return the unlocked chapter text.', inputSchema: empty },
   { name: 'read_story', description: 'Return the text of a chapter this account has unlocked in a system it has arrived in by swap.', inputSchema: { type: 'object', properties: { systemId: { type: 'string' }, storyId: { type: 'string' } }, required: ['systemId', 'storyId'], additionalProperties: false } },
+  { name: 'get_ship', description: 'Return this account\'s ship profile (name, biography, built-in art) or null if none is saved.', inputSchema: empty },
+  { name: 'set_ship', description: 'Save this account\'s ship profile on NearVerse. name: 1-60 characters; biography: up to 2000 characters; art: "courier", "surveyor" or "sail". Visible on the site after the owner signs in. A public on-chain copy in NEAR Social (social.near, key <account>/nearverse/ship) is optional and is written with the account\'s own key.',
+    inputSchema: { type: 'object', properties: { name: { type: 'string', minLength: 1, maxLength: 60 }, biography: { type: 'string', maxLength: 2000 }, art: { type: 'string', enum: ['courier', 'surveyor', 'sail'] } }, required: ['name', 'biography', 'art'], additionalProperties: false } },
 ] as const;
 
 // Agents see a system only after a verified swap into its asset; there is no free home system here.
@@ -123,6 +126,11 @@ export async function runTool(name: string, args: Args, c: ToolContext) {
   const post = (body: Args) => client.call(session, 'POST', '/api/events', { eventId: eventId(), ...body });
   switch (name) {
     case 'list_swap_tokens': case 'get_limits': case 'get_swap_quote': case 'verify_arrival': return runSwapTool(name, args, c, events);
+    case 'get_ship': return ((await client.call(session, 'GET', '/api/ship')) as { ship: unknown }).ship;
+    case 'set_ship': {
+      const ship = { name: String(args.name ?? '').trim(), biography: String(args.biography ?? ''), art: String(args.art ?? '') };
+      return ((await client.call(session, 'PUT', '/api/ship', ship)) as { ship: unknown }).ship;
+    }
     case 'list_systems': {
       const st = state(await events());
       return systems.map(s => st.open(s.id)

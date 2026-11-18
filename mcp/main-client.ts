@@ -6,7 +6,7 @@ export class MainApiError extends Error { constructor(public status: number, pub
 export interface MainClient {
   challenge(accountId: string): Promise<Challenge>;
   verify(body: unknown): Promise<{ session: string; accountId: string; expiresAt: number; purpose: string }>;
-  call(session: string, method: 'GET' | 'POST', path: string, body?: unknown): Promise<unknown>;
+  call(session: string, method: 'GET' | 'POST' | 'PUT', path: string, body?: unknown): Promise<unknown>;
   logout(session: string): Promise<void>;
 }
 export function mainClient(base: string, origin: string, perMinute = 20, timeoutMs = 8000, agentLinkSecret = ''): MainClient {

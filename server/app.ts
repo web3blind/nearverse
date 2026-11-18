@@ -116,6 +116,15 @@ export function createApp(options: AppOptions) {
       db.prepare('DELETE FROM events WHERE owner=?').run(res.locals.owner);
     })();res.json({ ok: true });
   });
+  // Ship profile: name, biography and built-in art. Stored per account so it follows the player across devices.
+  const shipRow = (owner: string) => db.prepare('SELECT name,biography,art,updatedAt FROM ships WHERE owner=?').get(owner) as { name: string; biography: string; art: string; updatedAt: number } | undefined;
+  app.get('/api/ship', auth, (_req, res) => { res.json({ ship: shipRow(res.locals.owner) ?? null }); });
+  app.put('/api/ship', auth, (req, res) => {
+    const body = req.body;
+    if (!validShip(body)) return fail(res, 400, 'invalid_ship');
+    db.prepare('INSERT INTO ships(owner,name,biography,art,updatedAt) VALUES (?,?,?,?,?) ON CONFLICT(owner) DO UPDATE SET name=excluded.name,biography=excluded.biography,art=excluded.art,updatedAt=excluded.updatedAt').run(res.locals.owner, body.name, body.biography, body.art, now());
+    res.json({ ship: shipRow(res.locals.owner) });
+  });
   app.post('/api/events', auth, async (req, res) => {
     const body = req.body;
     if (!exact(body, ['eventId','type','systemId','storyId','proof']) || !['eventId','systemId'].every(k => typeof body[k] === 'string' && identifier.test(body[k] as string)) || !['arrival','expedition.started','expedition.completed','story.read'].includes(body.type as string)) return fail(res, 400, 'invalid_event');
@@ -167,6 +176,13 @@ export function createApp(options: AppOptions) {
   app.use((_req, res) => { fail(res, 404, 'not_found'); });
   app.use((error: { type?: string; status?: number }, _req: Request, res: Response, _next: NextFunction) => { fail(res, error.status === 413 ? 413 : error.status === 400 ? 400 : 500, error.status === 413 ? 'body_limit' : error.status === 400 ? 'invalid_json' : 'internal_error'); });
   return app;
+}
+const controls = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
+export function validShip(value: unknown): value is { name: string; biography: string; art: string } {
+  return exact(value, ['name','biography','art']) && Object.keys(value).length === 3
+    && typeof value.name === 'string' && value.name.trim().length > 0 && value.name.length <= 60 && !controls.test(value.name) && !/[\r\n\t]/.test(value.name)
+    && typeof value.biography === 'string' && value.biography.length <= 2000 && !controls.test(value.biography)
+    && ['courier','surveyor','sail'].includes(value.art as string);
 }
 function validProof(value: unknown): boolean {
   if (!exact(value, ['depositAddress','depositMemo','originAsset','destinationAsset','amountIn','amountOut','minAmountOut'])) return false;

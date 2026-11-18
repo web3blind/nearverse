@@ -2,7 +2,9 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { useFinancialActivation } from './sdk/financialActivation';
 import { SystemIllustration } from './SystemIllustration';
 import { canon, getSystem, regions, systems, type Asset } from './world';
-import { gameStorage, makeEvent, progress, scopeKey, MAX_EXPORT_BYTES, type GameEvent, type GameSave, type HistoryTransport, type Scope, type Ship } from './storage';
+import { defaultShip, gameStorage, makeEvent, progress, scopeKey, MAX_EXPORT_BYTES, type GameEvent, type GameSave, type HistoryTransport, type Scope, type Ship } from './storage';
+import { readOnChainShip, readSocialStorage, shipDeposit, shipTransaction } from './social';
+import type { ShipSigner } from './sdk/FinancialPanel';
 import './style.css';
 
 async function request(path: string, account: string, body?: object): Promise<Record<string, unknown>> {
@@ -30,6 +32,19 @@ export const historyTransport: HistoryTransport = {
     return result.event as GameEvent;
   },
 };
+
+export const shipTransport = {
+  async read(account: string): Promise<Ship | null> {
+    const result = await request('/api/ship', account);
+    return (result.ship as Ship | null) ? { name: (result.ship as Ship).name, biography: (result.ship as Ship).biography, art: (result.ship as Ship).art } : null;
+  },
+  async write(account: string, ship: Ship): Promise<void> {
+    const response = await fetch('/api/ship', { method: 'PUT', credentials: 'same-origin', cache: 'no-store', signal: AbortSignal.timeout(10000), headers: { 'Content-Type': 'application/json', 'X-Nearverse-Account': account }, body: JSON.stringify({ name: ship.name, biography: ship.biography, art: ship.art }) });
+    if (!response.ok) throw new Error(response.status === 401 ? 'Sign in to your journal to save the ship to your account.' : `The server did not save the ship (HTTP ${response.status}).`);
+  },
+};
+const sameShip = (a: Ship | null | undefined, b: Ship | null | undefined) => !!a && !!b && a.name === b.name && a.biography === b.biography && a.art === b.art;
+const nearAmount = (yocto: bigint) => (Number(yocto / 10n ** 18n) / 1e6).toString();
 
 export function ShipArt({ art }: { art: Ship['art'] }) {
   return <svg className="ship-art" viewBox="0 0 480 260" role="img" aria-label={`Built-in ship illustration: ${art === 'sail' ? 'solar sail' : art === 'surveyor' ? 'explorer' : 'courier'}`}>
@@ -72,6 +87,9 @@ export function App() {
   const [draft, setDraft] = useState<Ship | null>(null);
   const [showReset, setShowReset] = useState(false);
   const [showDeleteJournal,setShowDeleteJournal] = useState(false);
+  const [shipSigner, setShipSigner] = useState<ShipSigner | undefined>();
+  const onShipSigner = useCallback((signer: ShipSigner | undefined) => setShipSigner(() => signer), []);
+  const [chainShip, setChainShip] = useState<Ship | null | undefined>(undefined);
   const file = useRef<HTMLInputElement>(null);
   const systemHeading = useRef<HTMLHeadingElement>(null);
   const scope: Scope = { mode, account };
@@ -93,7 +111,13 @@ export function App() {
   const sync = useCallback(async (target: Scope) => {
     const targetKey = scopeKey(target);
     try {
-      const next = await gameStorage.sync(target, historyTransport);
+      let next = await gameStorage.sync(target, historyTransport);
+      if (target.account) {
+        // The account ship on the server wins; a ship edited before this feature is uploaded once.
+        const remote = await shipTransport.read(target.account).catch(() => undefined);
+        if (remote) { if (!sameShip(remote, next.ship)) next = await gameStorage.saveShip(target, remote); }
+        else if (remote === null && !sameShip(next.ship, defaultShip)) await shipTransport.write(target.account, next.ship).catch(() => undefined);
+      }
       if (scopeRef.current === targetKey) { setSave(next); setSynced(true); setError(''); setNotice('History confirmed by the server.'); }
     } catch (cause) {
       if (scopeRef.current === targetKey) { setSynced(false); setError(errorMessage(cause)); }
@@ -163,7 +187,40 @@ export function App() {
   }
   function updateShip(event: FormEvent) {
     event.preventDefault(); if (!draft) return;
-    void act(target => gameStorage.saveShip(target, draft), 'Ship saved on this device only.').then(saved => { if (saved && scopeRef.current === key) closeShipEditor(); });
+    const ship = { ...draft, name: draft.name.trim() };
+    void act(async target => {
+      if (target.account && synced) await shipTransport.write(target.account, ship);
+      return gameStorage.saveShip(target, ship);
+    }, account && synced ? 'Ship saved to your NearVerse account.' : 'Ship saved on this device. Sign in to your journal to keep it on every device.').then(saved => { if (saved && scopeRef.current === key) closeShipEditor(); });
+  }
+  useEffect(() => {
+    let live = true; setChainShip(undefined);
+    if (account) readOnChainShip(account).then(ship => { if (live) setChainShip(ship); }).catch(() => { if (live) setChainShip(undefined); });
+    return () => { live = false; };
+  }, [account]);
+  async function publishShip() {
+    if (!account || !shipSigner || !save) return;
+    const owner = account; const ship = save.ship;
+    await act(async target => {
+      const deposit = shipDeposit(owner, ship, await readSocialStorage(owner));
+      setNotice(`Approve the NEAR Social transaction in your wallet. Refundable storage deposit: ${nearAmount(deposit)} NEAR. The ship becomes public.`);
+      await shipSigner(shipTransaction(owner, ship, deposit));
+      // Wallets return before the block is final; poll the final state for up to about 30 seconds.
+      let stored: Ship | null = null;
+      for (let attempt = 0; attempt < 10 && !sameShip(stored, ship); attempt++) {
+        if (attempt) await new Promise(resolve => setTimeout(resolve, 3000));
+        stored = await readOnChainShip(owner).catch(() => null);
+      }
+      if (scopeRef.current === key) setChainShip(stored);
+      if (!sameShip(stored, ship)) throw new Error('The transaction was sent, but NEAR Social does not show the ship yet. Check again in a minute.');
+      return gameStorage.load(target);
+    }, 'Ship saved publicly on NEAR Social (social.near).');
+  }
+  function loadChainShip() {
+    if (!chainShip) return;
+    setDraft({ ...chainShip });
+    setNotice('The ship from NEAR Social is in the editor. Review it and choose Save ship.');
+    window.requestAnimationFrame(() => document.getElementById('ship-name')?.focus());
   }
   async function deleteJournal() {
     if(preview || !account) return;
@@ -196,7 +253,7 @@ export function App() {
       <div className="feedback"><p role="status" aria-atomic="true">{notice || (save ? preview ? 'Practice progress is stored on this device.' : account ? `Account: ${account}. ${synced ? 'History synced.' : 'History has not synced yet.'}` : 'No wallet connected. Connect a NEAR wallet to swap into a system and save your history.' : 'Loading local journal…')}</p>{error && <p role="alert" className="error">{error}</p>}</div>
       <div className="cockpit-grid">
         <section className="map-panel panel" id="star-map" aria-labelledby="map-heading"><div className="section-heading"><div><p className="eyebrow">01 / Navigation</p><h2 id="map-heading">Atlas of passage threads</h2></div><span className="small-label">Regions: {regions.length} · systems: {systems.length}</span></div><MapArt selected={selected}/><p className="map-note">This map provides an overview. You can also select any beacon from the accessible destination list.</p><div className="region-list">{regions.map(region => <section key={region.asset} className="region" aria-labelledby={`region-${region.asset}`}><h3 id={`region-${region.asset}`}><span>{region.asset}</span> {region.name}</h3><p>{region.description}</p><ul>{systems.filter(item => item.asset === region.asset).map(item => <li key={item.id}><button type="button" aria-pressed={item.id === selected} onClick={() => choose(item.id)}><span>{item.name}</span>{' '}{visibleSave && progress(visibleSave, item.id).visited ? <><span>{item.subtitle}</span>{' '}<span className="beacon-state">Available</span></> : <span className="beacon-state"><span className="sr-only">, </span>Closed</span>}</button></li>)}</ul></section>)}</div></section>
-        <aside className="ship-panel panel" aria-labelledby="ship-heading"><p className="eyebrow">02 / Your ship</p><h2 id="ship-heading">{save?.ship.name ?? 'Ship profile'}</h2><ShipArt art={draft?.art ?? save?.ship.art ?? 'courier'}/>{save && !draft && <><p className="biography">{save.ship.biography || 'This ship has no biography yet. Write the first line.'}</p><button id="ship-edit" type="button" className="secondary" onClick={() => setDraft({ ...save.ship })}>Edit ship</button><p className="hint">The name, biography and built-in illustration are stored only in this browser.</p></>}{draft && <form onSubmit={updateShip}><label htmlFor="ship-name">Ship name</label><input id="ship-name" required maxLength={60} value={draft.name} onChange={event => setDraft({ ...draft, name: event.target.value })}/><label htmlFor="ship-bio">Biography</label><textarea id="ship-bio" rows={5} maxLength={2000} value={draft.biography} onChange={event => setDraft({ ...draft, biography: event.target.value })}/><label htmlFor="ship-art">Built-in design</label><select id="ship-art" value={draft.art} onChange={event => setDraft({ ...draft, art: event.target.value as Ship['art'] })}><option value="courier">Mail courier</option><option value="surveyor">Deep-space explorer</option><option value="sail">Solar sail</option></select><div className="actions"><button disabled={busy}>Save ship</button><button type="button" className="secondary" onClick={closeShipEditor}>Cancel</button></div></form>}<div className="ship-log"><span className="eyebrow">Propellant</span><p>{regions.find(region => region.asset === system.asset)?.material}</p><span className="hint">Fictional description, not your wallet balance.</span></div></aside>
+        <aside className="ship-panel panel" aria-labelledby="ship-heading"><p className="eyebrow">02 / Your ship</p><h2 id="ship-heading">{save?.ship.name ?? 'Ship profile'}</h2><ShipArt art={draft?.art ?? save?.ship.art ?? 'courier'}/>{save && !draft && <><p className="biography">{save.ship.biography || 'This ship has no biography yet. Write the first line.'}</p><button id="ship-edit" type="button" className="secondary" onClick={() => setDraft({ ...save.ship })}>Edit ship</button><p className="hint">{account && synced ? 'The name, biography and illustration are saved to your NearVerse account.' : 'Sign in to your journal to keep the ship on every device. Until then it is stored only in this browser.'}</p>{account && <div className="chain-ship" role="group" aria-label="Ship on NEAR Social"><p className="hint">{chainShip === undefined ? 'NEAR Social copy: not checked.' : chainShip === null ? 'NEAR Social copy: none. You can save a public copy to the NEAR blockchain.' : sameShip(chainShip, save.ship) ? 'NEAR Social copy: matches this ship.' : `NEAR Social copy: “${chainShip.name}”, differs from this ship.`}</p>{shipSigner ? <button type="button" className="secondary" disabled={busy || sameShip(chainShip, save.ship)} onClick={() => void publishShip()}>Save ship to NEAR (public, wallet signature)</button> : <p className="hint">Connect your wallet in the Converter to save a public copy to NEAR.</p>}{chainShip && !sameShip(chainShip, save.ship) && <button type="button" className="secondary" disabled={busy} onClick={loadChainShip}>Use the ship saved on NEAR</button>}</div>}</>}{draft && <form onSubmit={updateShip}><label htmlFor="ship-name">Ship name</label><input id="ship-name" required maxLength={60} value={draft.name} onChange={event => setDraft({ ...draft, name: event.target.value })}/><label htmlFor="ship-bio">Biography</label><textarea id="ship-bio" rows={5} maxLength={2000} value={draft.biography} onChange={event => setDraft({ ...draft, biography: event.target.value })}/><label htmlFor="ship-art">Built-in design</label><select id="ship-art" value={draft.art} onChange={event => setDraft({ ...draft, art: event.target.value as Ship['art'] })}><option value="courier">Mail courier</option><option value="surveyor">Deep-space explorer</option><option value="sail">Solar sail</option></select><div className="actions"><button disabled={busy}>Save ship</button><button type="button" className="secondary" onClick={closeShipEditor}>Cancel</button></div></form>}<div className="ship-log"><span className="eyebrow">Propellant</span><p>{regions.find(region => region.asset === system.asset)?.material}</p><span className="hint">Fictional description, not your wallet balance.</span></div></aside>
       </div>
       <div className="journey-grid">
         <section className="system-panel panel" aria-labelledby="system-heading"><p className="eyebrow">03 / Selected beacon · {system.asset}</p><h2 id="system-heading" ref={systemHeading} tabIndex={-1}>{system.name}{visible?.visited && <>{' '}<span className="heading-sub">{system.subtitle}</span></>}</h2>{visible?.visited ? <><p>{system.description}</p><dl className="system-facts"><div><dt>Planet</dt><dd>{system.planet}</dd></div><div><dt>Stories</dt><dd>{system.stories.length} in sequence</dd></div><div><dt>Exploration</dt><dd>Available</dd></div></dl></> : <p>This system is closed. Swap any amount into {system.asset} in the Converter to arrive here. Its description and chapters open after the server confirms your arrival.</p>}
@@ -207,7 +264,7 @@ export function App() {
           {otherExpedition && <p className="callout">An expedition is already underway in system {getSystem(otherExpedition.systemId).name}. <button type="button" className="secondary" onClick={() => choose(otherExpedition.systemId)}>Go to active expedition</button></p>}{visible?.visited && <div className="expedition"><h3>Expeditions on {system.planet}</h3><p>Three short chapters. No financial rewards or additional swaps.</p>{current?.next ? <><p><strong>Next chapter: {current.next.title}</strong></p>{current.active && <p>{seconds > 0 ? `Team returns in ${seconds}s.` : 'The team is ready to return. Complete the expedition to unlock the entry.'}{!preview && ' Readiness is confirmed by the server.'}</p>}<button type="button" disabled={busy || !canPlay || Boolean(otherExpedition) || (Boolean(current.active) && seconds > 0) || (!preview && !!save?.queue.length)} onClick={() => void expedition()}>{current.active ? 'Complete expedition and open entry' : 'Start expedition'}</button></> : <p className="complete">All stories in this system are unlocked. Revisit them below.</p>}</div>}
           {visible?.visited && <ol className="story-list">{system.stories.map((story, index) => <li key={story.id}><h3><span className="story-number">0{index + 1}</span>{' '}{story.title}</h3>{visible?.completed.has(story.id) ? <p>{story.text}</p> : <p className="hint">{index === 0 ? 'Unlocks after the first expedition.' : 'Complete the previous chapter first.'}</p>}</li>)}</ol>}
         </section>
-        <section className="converter-panel panel" id="converter" aria-labelledby="converter-heading"><p className="eyebrow">04 / Passage</p><h2 id="converter-heading">Converter</h2><p>Destination beacon: <strong>{system.name} · {system.asset}</strong></p><p>Selecting a beacon does not start a swap. Terms, amounts and fees are shown separately from the story.</p>{FinancialPanel ? <FinancialPanel onRecoveryActivated={onRecoveryActivated} activationRecoveryEntries={activationRecoveryEntries} activationRecoveryBlocked={activationRecoveryBlocked} connectRequest={connectRequest} preview={preview} targetAsset={system.asset as Asset} systemId={system.id} onAccountChange={setAccount} onHistorySession={active => { const saved = saveRef.current; if(active && saved?.scope.mode === 'real' && saved.scope.account) void sync(saved.scope); }} onArrival={() => { const active = saveRef.current; if (active?.scope.mode === 'real' && active.scope.account) void sync(active.scope); }}/> : (preview ? <p>Preview: wallets and real swaps are disabled.</p> : <div className="converter-connect"><p>Connect a NEAR wallet to request a quote. The financial module loads only when requested.</p><button type="button" disabled={walletLoading} onClick={()=>void activate()}>{walletLoading?'Loading NEAR wallet…':'Connect NEAR wallet to swap'}</button></div>)}<details className="canon"><summary>How passage threads work</summary><p>{canon}</p></details></section>
+        <section className="converter-panel panel" id="converter" aria-labelledby="converter-heading"><p className="eyebrow">04 / Passage</p><h2 id="converter-heading">Converter</h2><p>Destination beacon: <strong>{system.name} · {system.asset}</strong></p><p>Selecting a beacon does not start a swap. Terms, amounts and fees are shown separately from the story.</p>{FinancialPanel ? <FinancialPanel onRecoveryActivated={onRecoveryActivated} activationRecoveryEntries={activationRecoveryEntries} activationRecoveryBlocked={activationRecoveryBlocked} connectRequest={connectRequest} preview={preview} targetAsset={system.asset as Asset} systemId={system.id} onAccountChange={setAccount} onShipSigner={onShipSigner} onHistorySession={active => { const saved = saveRef.current; if(active && saved?.scope.mode === 'real' && saved.scope.account) void sync(saved.scope); }} onArrival={() => { const active = saveRef.current; if (active?.scope.mode === 'real' && active.scope.account) void sync(active.scope); }}/> : (preview ? <p>Preview: wallets and real swaps are disabled.</p> : <div className="converter-connect"><p>Connect a NEAR wallet to request a quote. The financial module loads only when requested.</p><button type="button" disabled={walletLoading} onClick={()=>void activate()}>{walletLoading?'Loading NEAR wallet…':'Connect NEAR wallet to swap'}</button></div>)}<details className="canon"><summary>How passage threads work</summary><p>{canon}</p></details></section>
       </div>
       <section className="journal-panel panel" id="journal" aria-labelledby="journal-heading"><div className="section-heading"><div><p className="eyebrow">05 / Route memory</p><h2 id="journal-heading">Ship journal</h2></div><span className="sync-label">{preview ? 'Preview only · not synced' : save?.queue.length ? `Not yet synced: ${save.queue.length}` : synced ? 'Confirmed by the server' : 'Local cache · not confirmed by the server'}</span></div><p className="hint">{preview ? 'Practice events are saved separately on this device. They cannot confirm a real arrival.' : 'The cache is separated by NEAR account. Unconfirmed events remain queued; personal ship settings are not sent to the server.'}</p>{!preview && account && <button type="button" className="secondary" disabled={busy} onClick={() => void sync(scope)}>Retry history sync</button>}{save?.events.length ? <ol className="journal-list">{[...save.events].reverse().map(event => <li key={event.eventId}><span>{labels[event.type]} · {getSystem(event.systemId).name}{event.storyId ? ` / ${getSystem(event.systemId).stories.find(story => story.id === event.storyId)?.title}` : ''}</span><span className="hint"><time dateTime={new Date(event.createdAt).toISOString()}>{new Date(event.createdAt).toLocaleString('en-US')}</time> · {preview ? 'practice entry' : save.queue.includes(event.eventId) ? 'not yet synced' : 'confirmed by the server'}</span></li>)}</ol> : <p className="empty">No entries yet. {preview ? 'Start an expedition in Lada or choose a practice arrival in another system.' : 'Swap into any system to make your first arrival.'}</p>}
         {!preview && account && <div className="data-tools"><button type="button" className="text-button" disabled={busy} aria-expanded={showDeleteJournal} onClick={()=>setShowDeleteJournal(!showDeleteJournal)}>Delete my journal from the server</button>{showDeleteJournal && <div role="group" aria-label="Confirm server journal deletion"><p>Visits and stories will be deleted for account {account}. Blockchain transactions will not be affected. Export your journal first if you want a copy.</p><button type="button" disabled={busy} onClick={()=>void deleteJournal()}>Confirm deletion of server journal</button><button type="button" className="secondary" onClick={()=>setShowDeleteJournal(false)}>Cancel</button></div>}</div>}

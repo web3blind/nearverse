@@ -291,3 +291,15 @@ describe('agent MCP module', () => {
     time += 61000; expect((await call(token, 'get_journal')).isError).toBe(false);
   });
 });
+
+describe('agent ship profile', () => {
+  it('reads and saves the ship of the linked account only', async () => {
+    const a = await link('alice.near'); const b = await link('bob.near');
+    expect((await call(a.token, 'get_ship')).data).toBeNull();
+    const saved = await call(a.token, 'set_ship', { name: ' Agent Courier ', biography: 'Built by an AI agent.', art: 'courier' });
+    expect(saved.isError).toBeFalsy(); expect(saved.data).toMatchObject({ name: 'Agent Courier', art: 'courier' });
+    expect((await call(a.token, 'get_ship')).data).toMatchObject({ name: 'Agent Courier' });
+    expect((await call(b.token, 'get_ship')).data).toBeNull();
+    expect((await call(a.token, 'set_ship', { name: 'x', biography: '', art: 'rocket' })).isError).toBe(true);
+  });
+});

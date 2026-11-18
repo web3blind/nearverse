@@ -26,6 +26,7 @@ Add the MCP server: url `https://nearverse.space/mcp`, header `Authorization: Be
 - `verify_arrival` {quoteId}
 - `start_expedition` {systemId} → `readyAt`; then `complete_expedition`
 - `read_story` {systemId, storyId}, `get_journal`
+- `get_ship`, `set_ship` {name 1-60, biography up to 2000, art courier|surveyor|sail}. Optional public copy: `agent-wallet.ts ship '<json>'` writes `<account>/nearverse/ship` on social.near (refundable deposit, about 0.02 NEAR first time).
 
 ## Procedure
 1. `list_systems`; pick a closed system whose asset you do not hold.

@@ -10,7 +10,7 @@ import type { FinancialPanelProps } from './FinancialPanel';
 import { commitBudget, guardedNearWallet, routeFeeCost, readReserve, reserveCost } from './signing';
 const tokenKey = (t:Token) => `${t.assetId}|${t.isIntent ? 'intents':'wallet'}`;
 const tokenLabel = (t:Token) => `${t.symbol} · ${t.isIntent ? 'Intents (NEP-245)' : `wallet ${t.blockchain} (NEP-141 / native)`}`;
-export function HeadlessConverter({ onRecoveryActivated,activationRecoveryEntries,activationRecoveryBlocked=false,preview,targetAsset,systemId,onAccountChange,onArrival,onHistorySession,apiKey }:FinancialPanelProps & {apiKey?:string}) {
+export function HeadlessConverter({ onRecoveryActivated,activationRecoveryEntries,activationRecoveryBlocked=false,preview,targetAsset,systemId,onAccountChange,onArrival,onHistorySession,onShipSigner,apiKey }:FinancialPanelProps & {apiKey?:string}) {
   const config = useConfig();
   const [mountRecovery]=useState(()=>observeRecovery({entries:activationRecoveryEntries ?? Object.create(null),blocked:activationRecoveryBlocked},probeRecovery()));
   const startupRecovery=useRef(mountRecovery);
@@ -30,6 +30,21 @@ export function HeadlessConverter({ onRecoveryActivated,activationRecoveryEntrie
     return active.wallet ??= guardedNearWallet(config.providers!.near!(),active.journey,active.source,active.deadline,active.current,open=>{walletOpen.current=open;});
   }:undefined}),[config.providers]);
   const {make:makeTransfer} = useMakeTransfer({providers,plugins:config.plugins});
+  const rawNear=config.providers?.near; const shipAccount=config.connectedWallets?.near;
+  useEffect(()=>{
+    // The ship signer is separate from swap signing: it can only write this account's nearverse/ship key on social.near.
+    if(!onShipSigner)return;
+    if(preview||!rawNear||!shipAccount){onShipSigner(undefined);return;}
+    onShipSigner(async params=>{
+      const tx=params.transactions; const action=tx[0]?.actions[0];
+      const data=action?.params.args.data as Record<string,{nearverse?:{ship?:unknown}}>|undefined;
+      if(tx.length!==1||tx[0].actions.length!==1||tx[0].signerId!==shipAccount||tx[0].receiverId!=='social.near'||action.type!=='FunctionCall'||action.params.methodName!=='set'
+        ||!data||Object.keys(data).join()!==shipAccount||Object.keys(data[shipAccount]).join()!=='nearverse'||Object.keys(data[shipAccount].nearverse??{}).join()!=='ship'
+        ||BigInt(action.params.deposit)>10n**23n) throw new Error('Only your own NearVerse ship can be written to NEAR Social.');
+      return rawNear().signAndSendTransactions(params as never);
+    });
+    return ()=>onShipSigner(undefined);
+  },[onShipSigner,rawNear,shipAccount,preview]);
   const {intentsAccountType}=useIntentsAccountType();
   // Standalone publishes the selected address under `default`, not `near`.
   // Do not mistake an EVM/Solana default address for a NEAR account.
