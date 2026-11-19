@@ -1,6 +1,6 @@
 import type { Asset } from './assets';
 export type { Asset } from './assets';
-export interface Story { id: string; title: string; text: string; durationSeconds: number }
+export interface Story { id: string; title: string; text: string; durationSeconds: number; seasonal?: boolean; releaseAt?: string }
 export interface StarSystem { id: string; asset: Asset; name: string; subtitle: string; planet: string; description: string; x: number; y: number; stories: Story[] }
 export interface Region { asset: Asset; name: string; material: string; description: string }
 export const WORLD_VERSION = 1;
@@ -12,8 +12,10 @@ export const regions: Region[] = [
   { asset: 'USDC', name: 'Equilibrium', material: 'stable energy', description: 'Beacons of shared reserves and quiet agreements.' },
   { asset: 'SOL', name: 'Pulse Arm', material: 'pulsed energy', description: 'Brief signals connect distant settlements.' },
 ];
+export const chapterSeconds = [15, 7200, 15];
 function stories(prefix: string, entries: [string, string][]): Story[] {
-  return entries.map(([title, text], index) => ({ id: `${prefix}-${index + 1}`, title, text, durationSeconds: 15 }));
+  // Chapter rhythm: the first opens in 15 s, the second is a long 2-hour expedition, the third needs a return swap.
+  return entries.map(([title, text], index) => ({ id: `${prefix}-${index + 1}`, title, text, durationSeconds: chapterSeconds[index] ?? 3600 }));
 }
 export const systems: StarSystem[] = [
   { id: 'near-lada', asset: 'NEAR', name: 'Lada', subtitle: 'A Garden on the Sunlit Side', planet: 'Willow', x: 19, y: 27,
@@ -77,6 +79,20 @@ export const systems: StarSystem[] = [
       ['A Different Rhythm', 'That evening, the distant city answers with a long, gentle flash. Nika notes the time of the reply and leaves a longer pause in the schedule. She waits by the receiver until the next signal.'],
     ]) },
 ];
+export interface SeasonEntry { id: string; systemId: string; title: string; durationSeconds: number; releaseAt: string; text?: string }
+/** Adds released seasonal chapters (from the server) after the static ones, in the server's order
+ *  (release time, then id). Never removes one: the server never drops a released chapter. */
+export function registerSeason(entries: SeasonEntry[]): void {
+  for (const entry of entries) {
+    const system = systems.find(s => s.id === entry.systemId); if (!system) continue;
+    const existing = system.stories.find(s => s.id === entry.id);
+    if (existing) { if (entry.text && existing.seasonal) existing.text = entry.text; continue; }
+    system.stories.push({ id: entry.id, title: entry.title, text: entry.text ?? '', durationSeconds: entry.durationSeconds, seasonal: true, releaseAt: entry.releaseAt });
+    const fixed = system.stories.filter(s => !s.seasonal);
+    const seasonal = system.stories.filter(s => s.seasonal).sort((a, b) => Date.parse(a.releaseAt!) - Date.parse(b.releaseAt!) || a.id.localeCompare(b.id));
+    system.stories.splice(0, system.stories.length, ...fixed, ...seasonal);
+  }
+}
 export function getSystem(id: string): StarSystem {
   const system = systems.find(item => item.id === id);
   if (!system) throw new Error('Unknown system');

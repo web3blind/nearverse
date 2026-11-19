@@ -37,17 +37,24 @@ export function useFinancialActivation() {
     window.addEventListener('storage',checkRecovery);window.addEventListener('focus',checkRecovery);
     return ()=>{window.removeEventListener('storage',checkRecovery);window.removeEventListener('focus',checkRecovery);};
   },[]);
-  async function activate(){
+  // A wallet connected earlier in this browser: load the module quietly so the provider can restore the
+  // session. No selector opens and nothing is signed; a failure just leaves the Connect button as before.
+  useEffect(()=>{
+    let stored=false;try{stored=!!localStorage.getItem('selected-wallet');}catch{/* storage blocked */}
+    if(stored)void activate(false);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[]);
+  async function activate(openSelector=true){
     if(inFlight.current)return;
     checkRecovery();
-    setError('');setConnectRequest(value=>value+1);
+    if(openSelector){setError('');setConnectRequest(value=>value+1);}
     if(Panel)return;
-    inFlight.current=true;setLoading(true);
+    inFlight.current=true;setLoading(openSelector);
     try {
       const module=await import('./FinancialPanel');
       checkRecovery();
       setPanel(()=>module.FinancialPanel);
-    }catch{setError('The wallet module could not be loaded. Retry NEAR wallet connection. No signature was requested.');}
+    }catch{if(openSelector)setError('The wallet module could not be loaded. Retry NEAR wallet connection. No signature was requested.');}
     finally{inFlight.current=false;setLoading(false);}
   }
   return {Panel,activate,loading,error,connectRequest,recovery,activationRecoveryBlocked,activationRecoveryEntries:observedRecovery.current.entries,onRecoveryActivated};

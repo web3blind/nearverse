@@ -14,6 +14,7 @@ import { openMcpStore, type McpStore } from '../mcp/store';
 import { mainClient } from '../mcp/main-client';
 import { createMcpApp } from '../mcp/app';
 import { toolDefinitions } from '../mcp/tools';
+import { routes } from '../src/rules';
 import type { OneClick, QuoteInput } from '../mcp/oneclick';
 
 // Offline stand-in for the NEAR Intents 1Click API.
@@ -46,7 +47,7 @@ async function rpc(token: string, method: string, params?: unknown) {
   const r = await fetch(mcpBase + '/mcp', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ jsonrpc: '2.0', id: ++rpcId, method, params }) });
   return { status: r.status, body: await r.json() as { result?: { content: { text: string }[]; isError?: boolean; structuredContent?: unknown; tools?: { name: string }[] }; error?: { message: string } } };
 }
-async function arrive(token: string, systemId = 'near-lada', fromToken = 'USDC') {
+async function arrive(token: string, systemId = 'near-lada', fromToken = routes[systemId].from.includes('USDC') ? 'USDC' : 'wNEAR') {
   const q = (await call(token, 'get_swap_quote', { systemId, fromToken, amount: '1.5' })).data as { quoteId: string };
   const before = swapStatus; swapStatus = 'SUCCESS'; const v = await call(token, 'verify_arrival', { quoteId: q.quoteId }); swapStatus = before; return v;
 }
@@ -183,17 +184,17 @@ describe('agent MCP module', () => {
   it('enforces the owner\'s per-swap and daily limits and releases refunded quotes', async () => {
     const r = await fetch(mcpBase + '/mcp/api/link', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...(await signed()), limits: { perSwapUsd: 2, dailyUsd: 3 } }) });
     const { token, limits } = await r.json() as { token: string; limits: unknown }; expect(limits).toEqual({ perSwapUsd: 2, dailyUsd: 3 });
-    const q = (systemId: string) => call(token, 'get_swap_quote', { systemId, fromToken: 'wNEAR', amount: '1' });
+    const q = (systemId: string, fromToken = 'wNEAR') => call(token, 'get_swap_quote', { systemId, fromToken, amount: '1' });
     usdPerQuote = '2.01'; expect((await q('btc-basalt')).text).toContain('per-swap limit');
     usdPerQuote = '1.50'; const first = (await q('btc-basalt')).data as { quoteId: string; deposit: { preferred: { actions: { type: string }[] } } };
     expect(first.deposit.preferred.actions[0].type).toBe('Transfer'); // native NEAR for wNEAR
     expect((await q('btc-basalt')).text).toContain('Do not pay twice'); // one open quote per destination
-    expect((await q('eth-prism')).isError).toBe(false);
-    expect((await q('sol-pulse')).text).toContain('Daily limit');
+    expect((await q('usdt-harbor')).isError).toBe(false);
+    expect((await q('sol-pulse', 'USDC')).text).toContain('Daily limit');
     swapStatus = 'REFUNDED'; await call(token, 'verify_arrival', { quoteId: first.quoteId });
-    expect((await q('sol-pulse')).isError).toBe(false); // the refunded quote no longer counts
+    expect((await q('sol-pulse', 'USDC')).isError).toBe(false); // the refunded quote no longer counts
     // Too large by the token-list price: refused before any 1Click call.
-    const calls = quotes.length; expect((await call(token, 'get_swap_quote', { systemId: 'usdt-harbor', fromToken: 'USDC', amount: '50' })).text).toContain('per-swap limit'); expect(quotes.length).toBe(calls);
+    const calls = quotes.length; expect((await call(token, 'get_swap_quote', { systemId: 'near-lada', fromToken: 'USDC', amount: '50' })).text).toContain('per-swap limit'); expect(quotes.length).toBe(calls);
     expect((await call(token, 'get_limits')).data).toMatchObject({ perSwapUsd: 2, dailyUsd: 3, reservedLast24hUsd: 3 });
     const bad = await fetch(mcpBase + '/mcp/api/link', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...(await signed()), limits: { perSwapUsd: 5, dailyUsd: 1 } }) });
     expect(bad.status).toBe(400);
@@ -201,25 +202,27 @@ describe('agent MCP module', () => {
   });
   it('refuses bad rates and paying again for an open system; hides closed systems from the journal', async () => {
     const { token } = await link();
-    usdOut = 1.0; expect((await call(token, 'get_swap_quote', { systemId: 'btc-basalt', fromToken: 'USDC', amount: '1.5' })).text).toContain('Bad rate'); usdOut = 0;
+    usdOut = 1.0; expect((await call(token, 'get_swap_quote', { systemId: 'btc-basalt', fromToken: 'wNEAR', amount: '1.5' })).text).toContain('Bad rate'); usdOut = 0;
     // Chapters played on the website in the free NEAR home system stay invisible to the agent until it swaps there.
     const session = store.find(token, time)!.session; const site = mc();
     // The site itself no longer has a free home system either.
     await expect(site.call(session, 'POST', '/api/events', { eventId: 'site-1', type: 'expedition.started', systemId: 'near-lada', storyId: 'lada-1' })).rejects.toMatchObject({ status: 409 });
     expect((await call(token, 'get_journal')).data).toEqual([]);
     await arrive(token, 'btc-basalt');
-    expect((await call(token, 'get_swap_quote', { systemId: 'btc-ember', fromToken: 'USDC', amount: '1' })).text).toContain('already open');
+    expect((await call(token, 'get_swap_quote', { systemId: 'btc-basalt', fromToken: 'wNEAR', amount: '1' })).text).toContain('already open');
+    // One swap opens one system: Ember shares BTC with Basalt but has its own route.
+    expect((await call(token, 'get_swap_quote', { systemId: 'btc-ember', fromToken: 'USDC', amount: '1' })).text).toContain('opens only by the route ETH');
     const journal = (await call(token, 'get_journal')).data as { system: string }[];
     expect(journal.map(e => e.system)).toEqual(['Basalt']);
   });
   it('lets any token of the same account finish a paid swap and sums spending per account', async () => {
-    usdPerQuote = '4.00'; const a = await link(); const first = await call(a.token, 'get_swap_quote', { systemId: 'btc-basalt', fromToken: 'USDC', amount: '4' }); expect(first.text).toContain('quoteId'); const q = first.data as { quoteId: string };
+    usdPerQuote = '4.00'; const a = await link(); const first = await call(a.token, 'get_swap_quote', { systemId: 'btc-basalt', fromToken: 'wNEAR', amount: '4' }); expect(first.text).toContain('quoteId'); const q = first.data as { quoteId: string };
     await fetch(mcpBase + '/mcp/api/link', { method: 'DELETE', headers: { Authorization: `Bearer ${a.token}` } });
     const relink = await fetch(mcpBase + '/mcp/api/link', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...(await signed()), limits: { perSwapUsd: 5, dailyUsd: 8 } }) });
     const b = await relink.json() as { token: string }; swapStatus = 'SUCCESS';
     expect((await call(b.token, 'verify_arrival', { quoteId: q.quoteId })).data).toMatchObject({ arrived: true });
     expect((await call(b.token, 'get_limits')).data).toMatchObject({ reservedLast24hUsd: 4 });
-    expect((await call(b.token, 'get_swap_quote', { systemId: 'usdt-harbor', fromToken: 'USDC', amount: '4' })).isError).toBe(false);
+    expect((await call(b.token, 'get_swap_quote', { systemId: 'usdt-harbor', fromToken: 'wNEAR', amount: '4' })).isError).toBe(false);
     expect((await call(b.token, 'get_swap_quote', { systemId: 'sol-pulse', fromToken: 'USDC', amount: '4' })).text).toContain('Daily limit');
   });
   it('caps its own load on the shared history API', async () => {
@@ -295,11 +298,29 @@ describe('agent MCP module', () => {
 describe('agent ship profile', () => {
   it('reads and saves the ship of the linked account only', async () => {
     const a = await link('alice.near'); const b = await link('bob.near');
-    expect((await call(a.token, 'get_ship')).data).toBeNull();
+    expect((await call(a.token, 'get_ship')).data).toMatchObject({ ship: null, level: { level: 1 } });
     const saved = await call(a.token, 'set_ship', { name: ' Agent Courier ', biography: 'Built by an AI agent.', art: 'courier' });
     expect(saved.isError).toBeFalsy(); expect(saved.data).toMatchObject({ name: 'Agent Courier', art: 'courier' });
-    expect((await call(a.token, 'get_ship')).data).toMatchObject({ name: 'Agent Courier' });
-    expect((await call(b.token, 'get_ship')).data).toBeNull();
+    expect((await call(a.token, 'get_ship')).data).toMatchObject({ ship: { name: 'Agent Courier' } });
+    expect((await call(b.token, 'get_ship')).data).toMatchObject({ ship: null });
     expect((await call(a.token, 'set_ship', { name: 'x', biography: '', art: 'rocket' })).isError).toBe(true);
+  });
+});
+
+describe('routes and return trips over MCP', () => {
+  it('opens one system per swap and asks for a return trip before chapter 3', async () => {
+    const { token } = await link();
+    expect((await arrive(token, 'usdt-harbor')).data).toMatchObject({ arrived: true });
+    const systems = (await call(token, 'list_systems')).data as { systemId: string; open: boolean; route: string }[];
+    expect(systems.find(s => s.systemId === 'usdt-linen')).toMatchObject({ open: false, route: 'SOL → USDT' });
+    for (const n of [1, 2]) {
+      expect((await call(token, 'start_expedition', { systemId: 'usdt-harbor' })).isError).toBeFalsy();
+      time += n === 1 ? 15000 : 7200000;
+      expect((await call(token, 'complete_expedition')).data).toMatchObject({ ready: true, chapter: n });
+    }
+    expect((await call(token, 'start_expedition', { systemId: 'usdt-harbor' })).text).toContain('needs a return trip');
+    time += 1000; swapStatus = 'PENDING_DEPOSIT';
+    expect((await arrive(token, 'usdt-harbor')).data).toMatchObject({ arrived: true });
+    expect((await call(token, 'start_expedition', { systemId: 'usdt-harbor' })).isError).toBeFalsy();
   });
 });

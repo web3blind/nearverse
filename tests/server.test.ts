@@ -9,6 +9,7 @@ import { KeyPair } from '@near-js/crypto';
 import { createApp, type AppOptions } from '../server/app';
 import { nep413Hash, type Challenge, bounded, verifySignature, ownershipVerifier } from '../server/auth';
 import { openStore, backupStore, restoreStore } from '../server/store';
+import { RULES_V2_AT } from '../src/rules';
 import { verifyArrival, type ArrivalProof } from '../server/upstream';
 
 const origin = 'http://localhost:5173';
@@ -115,7 +116,7 @@ describe('history HTTP security and ordering', () => {
     expect((await request('/api/events','POST',arrival,cookie)).status).toBe(409);
     expect((await (await request('/api/events','GET',undefined,cookie)).json()).events).toHaveLength(0);
     expect((await request('/api/events','POST',arrival,cookie)).status).toBe(201);
-    expect(arrives).toHaveBeenCalledWith('alice.near',{systemId:'btc-basalt',assetId:'nep141:nbtc.bridge.near'},proof);
+    expect(arrives).toHaveBeenCalledWith('alice.near',{systemId:'btc-basalt',assetId:'nep141:nbtc.bridge.near'},proof,undefined);
     expect((await request('/api/events','POST',{...arrival,eventId:'replay'},cookie)).status).toBe(409);
     const stored = JSON.stringify(db.prepare('SELECT * FROM events').all());
     expect(stored).not.toContain('deposit-123'); expect(stored).not.toContain('amountIn');
@@ -208,7 +209,7 @@ describe('ship profile', () => {
   it('stores one ship per signed-in account and keeps it after the journal is deleted', async () => {
     expect((await request('/api/ship')).status).toBe(401);
     const { cookie } = await login();
-    expect(await (await request('/api/ship', 'GET', undefined, cookie)).json()).toEqual({ ship: null });
+    expect((await (await request('/api/ship', 'GET', undefined, cookie)).json()).ship).toBeNull();
     const saved = await request('/api/ship', 'PUT', ship, cookie);
     expect(saved.status).toBe(200);
     expect((await saved.json()).ship).toMatchObject(ship);
@@ -216,7 +217,7 @@ describe('ship profile', () => {
     expect((await request('/api/journal', 'DELETE', {}, cookie)).status).toBe(200);
     expect((await (await request('/api/ship', 'GET', undefined, cookie)).json()).ship.name).toBe('Second');
     const other = await login('bob.near');
-    expect(await (await request('/api/ship', 'GET', undefined, other.cookie)).json()).toEqual({ ship: null });
+    expect((await (await request('/api/ship', 'GET', undefined, other.cookie)).json()).ship).toBeNull();
   });
   it.each([
     [{ ...ship, name: '' }], [{ ...ship, name: '   ' }], [{ ...ship, name: 'x'.repeat(61) }], [{ ...ship, name: 'a\nb' }],
@@ -228,5 +229,78 @@ describe('ship profile', () => {
   it('refuses a cross-site ship write', async () => {
     const { cookie } = await login();
     expect((await request('/api/ship', 'PUT', ship, cookie, 'https://evil.example')).status).toBe(403);
+  });
+});
+
+describe('routes, return trips and seasons', () => {
+  const harbor = (eventId: string, type: string, storyId: string) => ({ eventId, type, systemId: 'usdt-harbor', storyId });
+  const arrival = (eventId: string, originAsset = 'nep141:wrap.near', depositAddress = eventId) => ({ eventId, type: 'arrival', systemId: 'usdt-harbor', proof: { ...proof, depositAddress, originAsset, destinationAsset: 'nep141:usdt.tether-token.near' } });
+  it('refuses an off-route arrival unless its quote predates the rule change', async () => {
+    const { cookie } = await login();
+    arrives.mockImplementation(async (_o: string, _t: unknown, _p: unknown, options?: { quotedBefore?: number }) => options?.quotedBefore ? 'route_mismatch' : true);
+    const off = await request('/api/events', 'POST', arrival('a1', 'nep141:usdt.tether-token.near'), cookie);
+    expect(off.status).toBe(409); expect((await off.json()).error).toBe('route_mismatch');
+    expect(arrives).toHaveBeenLastCalledWith(expect.any(String), expect.anything(), expect.anything(), { quotedBefore: RULES_V2_AT });
+    // An upstream failure is never reported as a final route mismatch.
+    arrives.mockImplementation(async () => false);
+    const glitch = await request('/api/events', 'POST', arrival('a4', 'nep141:usdt.tether-token.near', 'dep-4'), cookie);
+    expect((await glitch.json()).error).toBe('arrival_unverified');
+    // Quoted before the change (the verifier confirms the quote timestamp): the old swap still counts.
+    arrives.mockImplementation(async () => true);
+    expect((await request('/api/events', 'POST', arrival('a3', 'nep141:usdt.tether-token.near', 'dep-3'), cookie)).status).toBe(201);
+    expect((await request('/api/events', 'POST', arrival('a2'), cookie)).status).toBe(201);
+    expect(arrives).toHaveBeenLastCalledWith(expect.any(String), expect.anything(), expect.anything(), undefined);
+  });
+  it('needs a return arrival before chapter 3 and then serves seasonal chapters', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'nv-season-'));
+    const file = join(dir, 'seasons.json');
+    const { writeFileSync } = await import('node:fs');
+    writeFileSync(file, JSON.stringify({ chapters: [
+      { id: 'harbor-s1', systemId: 'usdt-harbor', title: 'A New Berth', text: 'Seasonal text.', releaseAt: new Date(1800000000000 - 1000).toISOString() },
+      { id: 'harbor-s2', systemId: 'usdt-harbor', title: 'Future', text: 'Not yet.', releaseAt: new Date(1900000000000).toISOString() },
+    ] }));
+    server.closeAllConnections(); await new Promise<void>(r => server.close(() => r())); db.close();
+    await start({ seasonsFile: file });
+    try {
+      const { cookie } = await login();
+      expect(await (await request('/api/season', 'GET', undefined, cookie)).json()).toEqual({ chapters: [] });
+      expect((await request('/api/events', 'POST', arrival('a1'), cookie)).status).toBe(201);
+      const season = await (await request('/api/season', 'GET', undefined, cookie)).json();
+      expect(season.chapters).toEqual([expect.objectContaining({ id: 'harbor-s1', title: 'A New Berth' })]);
+      expect(season.chapters[0].text).toBeUndefined();
+      const play = async (n: string, wait: number) => {
+        expect((await request('/api/events', 'POST', harbor('s' + n, 'expedition.started', n), cookie)).status).toBe(201); time += wait;
+        expect((await request('/api/events', 'POST', harbor('c' + n, 'expedition.completed', n), cookie)).status).toBe(201);
+        expect((await request('/api/events', 'POST', harbor('r' + n, 'story.read', n), cookie)).status).toBe(201);
+      };
+      await play('harbor-1', 15000);
+      await play('harbor-2', 7200000);
+      const blocked = await request('/api/events', 'POST', harbor('s3', 'expedition.started', 'harbor-3'), cookie);
+      expect(blocked.status).toBe(409); expect((await blocked.json()).error).toBe('return_required');
+      expect((await request('/api/events', 'POST', arrival('a2', 'nep141:wrap.near', 'dep-2'), cookie)).status).toBe(201);
+      await play('harbor-3', 15000);
+      await play('harbor-s1', 3600000);
+      expect((await (await request('/api/season', 'GET', undefined, cookie)).json()).chapters[0].text).toBe('Seasonal text.');
+      expect((await request('/api/events', 'POST', harbor('s9', 'expedition.started', 'harbor-s2'), cookie)).status).toBe(409);
+      // A chapter removed from the file stays: journals reference it.
+      writeFileSync(file, JSON.stringify({ chapters: [] })); const { utimesSync } = await import('node:fs'); utimesSync(file, new Date(), new Date(Date.now() + 5000));
+      expect((await (await request('/api/season', 'GET', undefined, cookie)).json()).chapters.map((c: { id: string }) => c.id)).toEqual(['harbor-s1']);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe('season store', () => {
+  it('keeps stored chapters across restarts and refuses back-dated new ones', async () => {
+    const { seasonSource } = await import('../server/seasons');
+    const { writeFileSync } = await import('node:fs');
+    const dir = mkdtempSync(join(tmpdir(), 'nv-season-store-')); const file = join(dir, 's.json'); const store = openStore();
+    const ch = (id: string, releaseAt: string) => ({ id, systemId: 'near-echo', title: id, text: 'T ' + id, releaseAt });
+    try {
+      writeFileSync(file, JSON.stringify({ chapters: [ch('echo-s1', '2030-01-02T00:00:00Z')] }));
+      expect(seasonSource(file, store)().map(c => c.id)).toEqual(['echo-s1']);
+      writeFileSync(file, JSON.stringify({ chapters: [ch('echo-s0', '2030-01-01T00:00:00Z'), ch('echo-s2', '2030-01-03T00:00:00Z')] }));
+      // A restart reads the new file: the dropped chapter stays, the back-dated one is refused.
+      expect(seasonSource(file, store)().map(c => c.id)).toEqual(['echo-s1', 'echo-s2']);
+    } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
   });
 });

@@ -10,7 +10,7 @@ import type { FinancialPanelProps } from './FinancialPanel';
 import { commitBudget, guardedNearWallet, routeFeeCost, readReserve, reserveCost } from './signing';
 const tokenKey = (t:Token) => `${t.assetId}|${t.isIntent ? 'intents':'wallet'}`;
 const tokenLabel = (t:Token) => `${t.symbol} · ${t.isIntent ? 'Intents (NEP-245)' : `wallet ${t.blockchain} (NEP-141 / native)`}`;
-export function HeadlessConverter({ onRecoveryActivated,activationRecoveryEntries,activationRecoveryBlocked=false,preview,targetAsset,systemId,onAccountChange,onArrival,onHistorySession,onShipSigner,apiKey }:FinancialPanelProps & {apiKey?:string}) {
+export function HeadlessConverter({ onRecoveryActivated,activationRecoveryEntries,activationRecoveryBlocked=false,preview,targetAsset,systemId,onAccountChange,onArrival,onHistorySession,onShipSigner,sourceAssets,arrivalNeeded=true,apiKey }:FinancialPanelProps & {apiKey?:string}) {
   const config = useConfig();
   const [mountRecovery]=useState(()=>observeRecovery({entries:activationRecoveryEntries ?? Object.create(null),blocked:activationRecoveryBlocked},probeRecovery()));
   const startupRecovery=useRef(mountRecovery);
@@ -139,8 +139,11 @@ export function HeadlessConverter({ onRecoveryActivated,activationRecoveryEntrie
     const target = tokens.find(t=>t.isIntent && t.assetId === targetAssetId(targetAsset));
     if(!pending && target && tokenKey(target)!==(ctx.targetToken && tokenKey(ctx.targetToken))) {fireEvent('quoteReset',null);fireEvent('tokenSelect',{variant:'target',token:target});}
   },[tokens,targetAsset,pending]);
-  const eligible = tokens.filter(supportedToken);
-  const targetTokens = eligible.filter(t=>t.isIntent);
+  // A system opens only along its route: offer just the route's source assets (native NEAR counts as NEAR).
+  const routeSource=(t:Token)=>!sourceAssets||sourceAssets.includes(t.assetId==='native-near'?'nep141:wrap.near':t.assetId);
+  const allTokens = tokens.filter(supportedToken);
+  const eligible = allTokens.filter(routeSource);
+  const targetTokens = allTokens.filter(t=>t.isIntent);
   async function signInHistory(){
     const ownerIdentity=identity.current;
     try {
@@ -159,7 +162,7 @@ export function HeadlessConverter({ onRecoveryActivated,activationRecoveryEntrie
   function choose(variant:'source'|'target',key:string){
     if(pending) return;
     setAccepted(false);setAmount('');fireEvent('quoteReset',null);fireEvent('tokenSetAmount',{variant:'source',amount:''});
-    fireEvent('tokenSelect',{variant,token:eligible.find(t=>tokenKey(t)===key)});
+    fireEvent('tokenSelect',{variant,token:(variant==='source'?eligible:targetTokens).find(t=>tokenKey(t)===key)});
   }
   function inputAmount(value:string){
     setAmount(value);setAccepted(false);
@@ -182,7 +185,8 @@ export function HeadlessConverter({ onRecoveryActivated,activationRecoveryEntrie
     if(!canConfirm({preview,apiKey,account,quote:ctx.quote,accepted,error:ctx.error,pending:!!pending || recoveryBlocked || activationBlocked}) || !ctx.quote || !ctx.sourceToken || !ctx.targetToken || !account || !systemId) return;
     const quote = ctx.quote;
     if(quote.type !== 'QUOTE_REAL_WITH_AMOUNT' || !quote.depositAddress || quote.dry || !canonicalMinimum) return;
-    if(ctx.targetToken.assetId!==targetAssetId(targetAsset)||!supportedToken(ctx.sourceToken))return;
+    if(ctx.targetToken.assetId!==targetAssetId(targetAsset)||!supportedToken(ctx.sourceToken)||!routeSource(ctx.sourceToken))return;
+    if(!arrivalNeeded){setMessage('No swap is needed here now: either your journal is not synced yet, or this system is open and no return trip is due.');return;}
     if(probeRecovery().blocked){setRecoveryBlocked(true);setMessage('A saved or unreadable transaction recovery record blocks new swaps. Reload and recover its outcome before sending again.');return;}
     if(localStorage.getItem(pendingKey(account))!==null){setRecoveryBlocked(true);setMessage('A transaction is already saved in another window. Reload this page to recover it; repeat transfers are blocked.');return;}
     const ownerIdentity=identity.current;
@@ -216,6 +220,11 @@ export function HeadlessConverter({ onRecoveryActivated,activationRecoveryEntrie
     const journey=pending;const ownerIdentity=identity.current;
     try {
       const response=await fetch('/api/events',{method:'POST',headers:{'Content-Type':'application/json','X-Nearverse-Account':pending.accountId},body:JSON.stringify({eventId:pending.eventId,type:'arrival',systemId:pending.systemId,proof:{depositAddress:pending.depositAddress,depositMemo:pending.depositMemo,originAsset:pending.originAsset,destinationAsset:pending.destinationAsset,amountIn:pending.amountIn,amountOut:pending.amountOut,minAmountOut:pending.minAmountOut}})});
+      if(response.status===409 && (await response.clone().json().catch(()=>null))?.error==='route_mismatch'){
+        // Final: this swap went along a different route than the system requires. Funds stay in the account.
+        if(identity.current!==ownerIdentity)return;
+        setPending({...journey,skipArrival:true});setMessage('This swap used a different route than the system requires, so it does not open the system. The swapped funds are in your account. You can close this record.');return;
+      }
       if(!response.ok) throw new Error('Arrival has not yet been confirmed by the server. No repeat transfer is needed.');
       const receipt=await response.json();
       if(identity.current!==ownerIdentity)return;
@@ -247,8 +256,9 @@ export function HeadlessConverter({ onRecoveryActivated,activationRecoveryEntrie
     {(ctx.quoteStatus==='error'||ctx.error) && <p role="alert">Route or amount unavailable: {ctx.error?.code || 'quote error'}. {pending ? 'The transaction outcome is not yet confirmed. Do not send again.' : 'No swap signature is being requested.'}</p>}
     {quote && quote.type !== 'QUOTE_DEPOSIT_ANY_AMOUNT' && ctx.sourceToken && ctx.targetToken && <dl><dt>You pay</dt><dd>{formatUnits(quote.amountIn,ctx.sourceToken.decimals)} {ctx.sourceToken.symbol} · {ctx.sourceToken.assetId}</dd><dt>You receive</dt><dd>{formatUnits(quote.amountOut,ctx.targetToken.decimals)} {ctx.targetToken.symbol} · {ctx.targetToken.assetId} · Intents</dd><dt>Minimum received from the original service quote</dt><dd>{canonicalMinimum ? formatUnits(canonicalMinimum,ctx.targetToken.decimals) : 'Waiting for verification of the original quote. Swap signing is blocked.'}</dd><dt>Fees</dt><dd>No NearVerse fee is added. {JSON.stringify(quote.appFees || [])}. Final amounts include route costs.</dd><dt>Valid until</dt><dd>{quote.deadline || 'Estimate only, not a transfer'}</dd></dl>}
     <label><input type="checkbox" checked={accepted} disabled={!quote || quote.dry || !!pending || preview} onChange={e=>{if(!e.target.checked)consentRevocation.current++;setAccepted(e.target.checked);}}/>I have reviewed the assets, where they are held, the amount and the quote terms.</label>
-    <button type="button" disabled={!allowed} onClick={confirm}>Approve terms and request swap signature</button>
-    {pending && <div><p role="status">Passage: {status.isError?'UNKNOWN':finalStatus(status.data?.status)}. Transaction address: {pending.depositAddress}. This is not confirmation of arrival.</p><button disabled={!session || pending.skipArrival || pending.accountId!==account || status.data?.status!=='SUCCESS'} onClick={verifyArrival}>Verify arrival with the server</button>{mayAcknowledge(status.data?.status,pending,boundRecoveryStatus(status.data,pending)) && <button type="button" onClick={acknowledge}>Acknowledge outcome and close recovery without arrival</button>}{pending.skipArrival && <p>This journal has been deleted. The transaction is tracked only for safe recovery, without adding the arrival again.</p>}<p>If the outcome is unknown, do not repeat the transfer. Even after cancelling a signature, check the transaction before starting a new swap.</p></div>}
+    {!arrivalNeeded && !pending && <p>Swaps here are paused until your journal is synced, or because this system is open and no return trip is due. A swap now would unlock nothing.</p>}
+    <button type="button" disabled={!allowed || !arrivalNeeded || (!!ctx.sourceToken && !routeSource(ctx.sourceToken))} onClick={confirm}>Approve terms and request swap signature</button>
+    {pending && <div><p role="status">Passage: {status.isError?'UNKNOWN':finalStatus(status.data?.status)}. Transaction address: {pending.depositAddress}. This is not confirmation of arrival.</p><button disabled={!session || pending.skipArrival || pending.accountId!==account || status.data?.status!=='SUCCESS'} onClick={verifyArrival}>Verify arrival with the server</button>{mayAcknowledge(status.data?.status,pending,boundRecoveryStatus(status.data,pending)) && <button type="button" onClick={acknowledge}>Acknowledge outcome and close recovery without arrival</button>}{pending.skipArrival && <p>This arrival will not be added to the journal. The transaction is tracked only for safe recovery.</p>}<p>If the outcome is unknown, do not repeat the transfer. Even after cancelling a signature, check the transaction before starting a new swap.</p></div>}
     <p role="status" aria-live="polite">{message}</p>
   </div>;
 }

@@ -5,6 +5,9 @@ import { bounded, digest, ownershipVerifier, token, verifySignature, type Challe
 import { openStore } from './store';
 import { historySystems, homeSystemId } from './world';
 import { verifyArrival, type ArrivalVerifier, type ArrivalProof } from './upstream';
+import { isOpen, returnPending, routeAllowed, explorerLevel, RULES_V2_AT } from '../src/rules';
+import { systems as worldSystems } from '../src/world';
+import { released, seasonSource, SEASON_CHAPTER_SECONDS } from './seasons';
 
 export interface HistorySystem { id: string; assetId: string; stories: { id: string; durationMs: number; requires?: string[] }[] }
 export interface AppOptions {
@@ -12,6 +15,8 @@ export interface AppOptions {
   systems?: HistorySystem[]; homeSystemId?: string;
   /** Shared with the MCP module only; without it, agent grants are disabled. */
   agentLinkSecret?: string;
+  /** Runtime JSON with seasonal chapters (see server/seasons.ts). */
+  seasonsFile?: string;
   verifyOwnership?: (owner: string, publicKey: string) => Promise<boolean>;
   verifyArrival?: ArrivalVerifier;
 }
@@ -30,7 +35,9 @@ export function createApp(options: AppOptions) {
   if (!secure && !['localhost', '127.0.0.1', '[::1]'].includes(new URL(origin).hostname)) throw new Error('https_required');
   const db = options.db ?? openStore(); const now = options.now ?? Date.now;
   const owns = options.verifyOwnership ?? ownershipVerifier(); const arrives = options.verifyArrival ?? verifyArrival;
-  const systems = options.systems ?? historySystems; const home = options.homeSystemId ?? homeSystemId; const app = express(); app.disable('x-powered-by');
+  const baseSystems = options.systems ?? historySystems; const season = seasonSource(options.seasonsFile, db);
+  // Static chapters plus seasonal chapters released by now; each seasonal chapter follows the previous one.
+  const systemsNow = (owner?: string): HistorySystem[] => { const used = owner ? new Set(rows(owner).map(e => e.storyId)) : new Set(); const out = season().filter(c => Date.parse(c.releaseAt) <= now() || used.has(c.id)); return baseSystems.map(s => { const extra = out.filter(c => c.systemId === s.id); if (!extra.length) return s; const stories = [...s.stories]; for (const c of extra) stories.push({ id: c.id, durationMs: SEASON_CHAPTER_SECONDS * 1000, requires: [stories[stories.length - 1].id] }); return { ...s, stories }; }); }; const home = options.homeSystemId ?? homeSystemId; const app = express(); app.disable('x-powered-by');
   const rates = new Map<string, { count: number; until: number }>();
   const linkSecret = options.agentLinkSecret && options.agentLinkSecret.length >= 32 ? Buffer.from(options.agentLinkSecret) : undefined;
   const agentLink = (req: Request) => {
@@ -118,17 +125,27 @@ export function createApp(options: AppOptions) {
   });
   // Ship profile: name, biography and built-in art. Stored per account so it follows the player across devices.
   const shipRow = (owner: string) => db.prepare('SELECT name,biography,art,updatedAt FROM ships WHERE owner=?').get(owner) as { name: string; biography: string; art: string; updatedAt: number } | undefined;
-  app.get('/api/ship', auth, (_req, res) => { res.json({ ship: shipRow(res.locals.owner) ?? null }); });
+  app.get('/api/ship', auth, (_req, res) => {
+    const level = explorerLevel(rows(res.locals.owner).map(e => ({ type: e.type, systemId: e.systemId, storyId: e.storyId, createdAt: e.createdAt })));
+    res.json({ ship: shipRow(res.locals.owner) ?? null, level });
+  });
   app.put('/api/ship', auth, (req, res) => {
     const body = req.body;
     if (!validShip(body)) return fail(res, 400, 'invalid_ship');
     db.prepare('INSERT INTO ships(owner,name,biography,art,updatedAt) VALUES (?,?,?,?,?) ON CONFLICT(owner) DO UPDATE SET name=excluded.name,biography=excluded.biography,art=excluded.art,updatedAt=excluded.updatedAt').run(res.locals.owner, body.name, body.biography, body.art, now());
     res.json({ ship: shipRow(res.locals.owner) });
   });
+  // Seasonal chapters for systems this account has reached: titles for reached systems, texts only once read.
+  app.get('/api/season', auth, (_req, res) => {
+    const history = rows(res.locals.owner).map(e => ({ type: e.type, systemId: e.systemId, storyId: e.storyId, createdAt: e.createdAt }));
+    const used = new Set(history.map(e => e.storyId));
+    res.json({ chapters: season().filter(c => Date.parse(c.releaseAt) <= now() || used.has(c.id)).filter(c => { const w = worldSystems.find(s => s.id === c.systemId); return !!w && isOpen(w, history); })
+      .map(c => ({ id: c.id, systemId: c.systemId, title: c.title, durationSeconds: SEASON_CHAPTER_SECONDS, releaseAt: c.releaseAt, ...(history.some(e => e.type === 'story.read' && e.storyId === c.id) ? { text: c.text } : {}) })) });
+  });
   app.post('/api/events', auth, async (req, res) => {
     const body = req.body;
     if (!exact(body, ['eventId','type','systemId','storyId','proof']) || !['eventId','systemId'].every(k => typeof body[k] === 'string' && identifier.test(body[k] as string)) || !['arrival','expedition.started','expedition.completed','story.read'].includes(body.type as string)) return fail(res, 400, 'invalid_event');
-    const system = systems.find(s => s.id === body.systemId); if (!system) return fail(res, 400, 'unknown_system');
+    const systems = systemsNow(res.locals.owner as string); const system = systems.find(s => s.id === body.systemId); if (!system) return fail(res, 400, 'unknown_system');
     if (body.type !== 'arrival' && ('proof' in body || typeof body.storyId !== 'string')) return fail(res, 400, 'invalid_event');
     if (body.type === 'arrival' && ('storyId' in body || !validProof(body.proof))) return fail(res, 400, 'invalid_proof');
     const fingerprint = digest(JSON.stringify([body.type, body.systemId, body.storyId ?? null, body.proof ? Object.entries(body.proof).sort(([a],[b]) => a.localeCompare(b)) : null]));
@@ -137,7 +154,10 @@ export function createApp(options: AppOptions) {
     const prior = existing();
     if (prior) return prior.fingerprint === fingerprint ? res.json({ event: wire(prior) }) : fail(res, 409, 'event_id_conflict');
     if (body.type === 'arrival') {
-      try { if (!await bounded(arrives(owner, { systemId: system.id, assetId: system.assetId }, body.proof as unknown as ArrivalProof))) return fail(res, 409, 'arrival_unverified'); }
+      // One swap opens one system, and only along its route (source asset → system asset).
+      // A swap quoted before the rule change still counts, so nobody who paid earlier gets stuck.
+      const offRoute = worldSystems.some(s => s.id === system.id) && !routeAllowed(system.id, (body.proof as ArrivalProof)?.originAsset);
+      try { const verdict = await bounded(arrives(owner, { systemId: system.id, assetId: system.assetId }, body.proof as unknown as ArrivalProof, offRoute ? { quotedBefore: RULES_V2_AT } : undefined)); if (verdict !== true) return fail(res, 409, verdict === 'route_mismatch' ? 'route_mismatch' : 'arrival_unverified'); }
       catch { return fail(res, 503, 'arrival_verification_unavailable'); }
     }
     // Logout/expiry during an upstream await must revoke the in-flight write too.
@@ -148,8 +168,11 @@ export function createApp(options: AppOptions) {
       const result = db.transaction(() => {
         const duplicate = existing(); if (duplicate) { if (duplicate.fingerprint !== fingerprint) throw new Error('event_id_conflict'); return duplicate; }
         const history = rows(owner); if (history.length >= 10000) throw new Error('journal_limit');
-        const visited = (!!home && system.assetId === systems.find(s => s.id === home)?.assetId) || history.some(e => e.type === 'arrival' && systems.find(s => s.id === e.systemId)?.assetId === system.assetId);
+        const world = worldSystems.find(s => s.id === system.id);
+        const ruleHistory = history.map(e => ({ type: e.type, systemId: e.systemId, storyId: e.storyId, createdAt: e.createdAt }));
+        const visited = (!!home && system.assetId === systems.find(s => s.id === home)?.assetId) || (world ? isOpen(world, ruleHistory) : history.some(e => e.type === 'arrival' && e.systemId === system.id));
         const story = system.stories.find(s => s.id === body.storyId);
+        if (body.type === 'expedition.started' && world && story && returnPending(world, system.stories.indexOf(story), ruleHistory)) throw new Error('return_required');
         const relevant = history.filter(e => e.systemId === system.id && e.storyId === body.storyId);
         let payload = '{}';
         if (body.type !== 'arrival') {
@@ -170,7 +193,7 @@ export function createApp(options: AppOptions) {
       res.status(201).json({ event: wire(result) });
     } catch (error) {
       const message = error instanceof Error ? error.message : '';
-      fail(res, 409, ['journal_limit','event_id_conflict','exploration_locked','story_order','expedition_active','expedition_not_ready'].includes(message) ? message : 'event_conflict');
+      fail(res, 409, ['journal_limit','event_id_conflict','exploration_locked','story_order','expedition_active','expedition_not_ready','return_required'].includes(message) ? message : 'event_conflict');
     }
   });
   app.use((_req, res) => { fail(res, 404, 'not_found'); });

@@ -5,7 +5,7 @@ import { HeadlessConverter } from './HeadlessConverter';
 import { assetIds } from '../assets';
 import type {RecoveryObservation} from './recoveryProbe';
 import '@aurora-is-near/intents-swap-widget/styles.css';
-export interface FinancialPanelProps { onRecoveryActivated?:(accepted:RecoveryObservation,canOwn:(final:RecoveryObservation)=>boolean)=>RecoveryObservation; activationRecoveryEntries?:Record<string,string>; activationRecoveryBlocked?:boolean; connectRequest?:number; preview:boolean; targetAsset?:string; systemId?:string; onAccountChange?:(account:string|null)=>void; onArrival?:(journey:unknown)=>void; onHistorySession?:(active:boolean)=>void; onShipSigner?:(signer:ShipSigner|undefined)=>void }
+export interface FinancialPanelProps { onRecoveryActivated?:(accepted:RecoveryObservation,canOwn:(final:RecoveryObservation)=>boolean)=>RecoveryObservation; activationRecoveryEntries?:Record<string,string>; activationRecoveryBlocked?:boolean; connectRequest?:number; preview:boolean; targetAsset?:string; systemId?:string; onAccountChange?:(account:string|null)=>void; onArrival?:(journey:unknown)=>void; onHistorySession?:(active:boolean)=>void; onShipSigner?:(signer:ShipSigner|undefined)=>void; sourceAssets?:string[]; arrivalNeeded?:boolean }
 /** Signs only a social.near `set` of the connected account's own NearVerse ship. */
 export type ShipSigner = (params:{transactions:{signerId:string;receiverId:string;actions:{type:'FunctionCall';params:{methodName:string;args:{data:Record<string,unknown>};gas:string;deposit:string}}[]}[]})=>Promise<unknown>;
 class SDKBoundary extends Component<{children:ReactNode},{error:boolean}> {

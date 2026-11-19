@@ -35,6 +35,12 @@ Response `{event:{seq,eventId,type,systemId,storyId?,createdAt,readyAt?}}`: HTTP
 
 Limits: 8 KiB JSON body, 120 requests/minute per direct peer IP, 1,000 outstanding challenges globally, 10,000 events per owner, 5-second verifier deadlines. No trust-proxy is enabled; a future reverse proxy must explicitly provide a safe deployment-specific rate-limit identity before public use. These are MVP local-process limits, not distributed abuse protection. NEAR provider RPC requests have bounded HTTP-handler deadlines but the installed official provider does not expose cancellation of its underlying fetch. Arrival status fetch is aborted at 5 seconds and capped at 64 KiB. All API responses are no-store. No request bodies/signatures are logged.
 
+## Routes, return trips, seasons
+- One verified arrival opens one system, and only along its route (`src/rules.ts`): the proof's `originAsset` must be one of the system's source assets, otherwise 409 `route_mismatch`. Arrivals recorded before `RULES_V2_AT` keep opening every system of their asset.
+- Chapter 1: 15 s expedition. Chapter 2: 2 h. Chapter 3: needs a return arrival in the same system after chapter 2 is read (409 `return_required`), then 15 s.
+- Seasonal chapters come from `runtime/seasons.json` (`SEASONS_FILE`), re-read on change: `{chapters:[{id,systemId,title,text,releaseAt}]}`. Released ones follow the static chapters (1 h each). `GET /api/season` (session) lists released chapters of reached systems; `text` only for chapters this account has read.
+- `GET /api/ship` also returns `level` (explorer level: 1 point per chapter, 1 per two systems, a level per 3 points).
+
 ## Ship profile
 - `GET /api/ship` (session) → `{ship:{name,biography,art,updatedAt}|null}`.
 - `PUT /api/ship` (session, same-origin JSON) `{name,biography,art}` → `{ship}`. name 1–60 chars, one line; biography ≤ 2000 chars; art `courier|surveyor|sail`; control characters rejected (400 `invalid_ship`). One ship per account; deleting the journal keeps the ship.

@@ -40,12 +40,14 @@ beforeEach(()=>{localStorage.clear();observed.mounts=0;h.integration=false;h.fin
 });
 afterEach(()=>{cleanup();vi.restoreAllMocks();vi.unstubAllGlobals();if(oldLocks)Object.defineProperty(navigator,'locks',oldLocks);else Reflect.deleteProperty(navigator,'locks');});
 describe('explicit financial activation lifetime',()=>{
-  it('keeps cached accounts lightweight, first click requests connect, beacon changes do not remount or reconnect',async()=>{
+  it('restores an earlier wallet quietly, first click requests connect, beacon changes do not remount or reconnect',async()=>{
     localStorage.setItem('selected-wallet','meteor-wallet');
     localStorage.setItem('nearverse:cached-account','alice.near');
-    const view=render(<Shell/>);expect(observed.mounts).toBe(0);
+    const view=render(<Shell/>);
+    // The module loads for session restore without a connect request (no selector, no signature).
+    await waitFor(()=>expect(observed.mounts).toBe(1));expect(screen.getByTestId('request').textContent).toBe('0');
     const button=screen.getByRole('button',{name:'Connect NEAR wallet'}) as HTMLButtonElement;expect(button.disabled).toBe(false);
-    fireEvent.click(button);expect(screen.getByRole('status').textContent).toContain('Loading');
+    fireEvent.click(button);
     await waitFor(()=>expect(screen.getByTestId('request').textContent).toBe('1'));
     fireEvent.click(screen.getByLabelText('Fixture consent'));
     view.rerender(<Shell beacon="btc-basalt"/>);
@@ -226,3 +228,4 @@ describe('monotonic recovery admission through lazy loading',()=>{
     expect(h.make).not.toHaveBeenCalled();expect(h.sign).not.toHaveBeenCalled();expect(h.send).not.toHaveBeenCalled();
   });
 });
+

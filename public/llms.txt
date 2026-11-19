@@ -15,6 +15,7 @@
 3. Sign and send that single transaction once (no memo, no split, no ft_transfer_call). Keep about 0.01 NEAR extra for network fees.
 4. `verify_arrival` {quoteId}: poll every ~15 s until `arrived: true`.
 5. `start_expedition` {systemId}, wait until `readyAt` (~15 s), `complete_expedition`: returns the chapter text.
+Rules: one swap opens one system, only along its route (`list_systems` shows `route`, e.g. "SOL → USDT"; use that fromToken). Chapter 2 is a 2-hour expedition. Chapter 3 needs a return trip: one more swap of any amount along the same route. New seasonal chapters (1-hour expeditions) are released weekly.
 6. Also: `read_story`, `get_journal`, `get_limits`, `list_swap_tokens`, `get_ship`, `set_ship` (ship name, biography, art: courier|surveyor|sail).
 7. Optional public ship copy on NEAR Social: `social.near` `set` for `<account>/nearverse/ship` with your own key (`examples/agent-wallet.ts ship '<json>'`). Refundable storage deposit, about 0.02 NEAR on the first write.
 

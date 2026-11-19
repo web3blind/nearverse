@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
-import { systems, regions } from '../src/world';
+import { systems, regions, registerSeason, type SeasonEntry } from '../src/world';
 import { assetIds } from '../src/assets';
+import { arrivalNeeded, explorerLevel, isOpen, routeAllowed, routeLabel, routes } from '../src/rules';
 import { MainApiError, type MainClient } from './main-client';
 import type { Link, McpStore } from './store';
 import type { OneClick } from './oneclick';
@@ -20,7 +21,7 @@ export const toolDefinitions = [
   { name: 'get_swap_quote', description: 'Get a NEAR Intents quote to travel to a system: swap `amount` of `fromToken` (symbol or assetId from list_swap_tokens; human units, e.g. "0.1") into the system\'s asset. Checks the owner\'s limits. Returns a deposit address and the exact single NEAR transaction your own wallet tool must sign and send from this account. NearVerse never holds keys or funds.', inputSchema: { type: 'object', properties: { systemId: { type: 'string' }, fromToken: { type: 'string' }, amount: { type: 'string', pattern: '^[0-9]+(\\.[0-9]+)?$' } }, required: ['systemId', 'fromToken', 'amount'], additionalProperties: false } },
   { name: 'verify_arrival', description: 'After sending the deposit for a quote, check the swap. When NEAR Intents reports SUCCESS, the arrival is verified by the server and the system opens. Call again while the status is pending.', inputSchema: { type: 'object', properties: { quoteId: { type: 'string' } }, required: ['quoteId'], additionalProperties: false } },
   { name: 'get_journal', description: 'Return the latest confirmed ship journal events (arrivals, expeditions, chapters read).', inputSchema: { type: 'object', properties: { limit: { type: 'integer', minimum: 1, maximum: 100 } }, additionalProperties: false } },
-  { name: 'start_expedition', description: 'Start the next chapter expedition in a system this account has arrived in by swap. Only one expedition can be active. Takes about 15 seconds.', inputSchema: { type: 'object', properties: { systemId: { type: 'string' } }, required: ['systemId'], additionalProperties: false } },
+  { name: 'start_expedition', description: 'Start the next chapter expedition in a system this account has arrived in by swap. Only one expedition can be active. Chapter 1 takes about 15 seconds, chapter 2 two hours, seasonal chapters one hour; chapter 3 needs a return swap first.', inputSchema: { type: 'object', properties: { systemId: { type: 'string' } }, required: ['systemId'], additionalProperties: false } },
   { name: 'complete_expedition', description: 'Complete the active expedition when it is ready and return the unlocked chapter text.', inputSchema: empty },
   { name: 'read_story', description: 'Return the text of a chapter this account has unlocked in a system it has arrived in by swap.', inputSchema: { type: 'object', properties: { systemId: { type: 'string' }, storyId: { type: 'string' } }, required: ['systemId', 'storyId'], additionalProperties: false } },
   { name: 'get_ship', description: 'Return this account\'s ship profile (name, biography, built-in art) or null if none is saved.', inputSchema: empty },
@@ -30,16 +31,35 @@ export const toolDefinitions = [
 
 // Agents see a system only after a verified swap into its asset; there is no free home system here.
 function state(events: Event[]) {
-  const arrived = new Set(events.filter(e => e.type === 'arrival').map(e => systems.find(s => s.id === e.systemId)?.asset));
-  const open = (id: string) => { const s = systems.find(x => x.id === id); return !!s && arrived.has(s.asset); };
+  const open = (id: string) => { const s = systems.find(x => x.id === id); return !!s && isOpen(s, events); };
+  const needs = (id: string) => { const s = systems.find(x => x.id === id); return s ? arrivalNeeded(s, events) : null; };
   const has = (type: string, systemId: string, storyId: string) => events.some(e => e.type === type && e.systemId === systemId && e.storyId === storyId);
   const active = events.find(e => e.type === 'expedition.started' && !has('expedition.completed', e.systemId, e.storyId!));
   const unread = events.find(e => e.type === 'expedition.completed' && !has('story.read', e.systemId, e.storyId!));
-  return { open, has, active, unread };
+  return { open, needs, has, active, unread };
 }
 const system = (id: unknown) => { const s = systems.find(x => x.id === id); if (!s) throw new ToolError('Unknown systemId. Call list_systems for valid ids.'); return s; };
 const locked = (s: (typeof systems)[number]) => new ToolError(`${s.name} is closed. Arrive by swap first: get_swap_quote with systemId "${s.id}", send the deposit, then verify_arrival.`);
-const chapter = (systemId: string, storyId: string) => { const s = system(systemId); const st = s.stories.find(x => x.id === storyId)!; return { system: s.name, chapter: s.stories.indexOf(st) + 1, title: st.title, text: st.text }; };
+// Seasonal texts are kept per call (never in module state): another owner's request may interleave.
+async function chapterOf(c: ToolContext, texts: { map: Map<string, string> }, systemId: string, storyId: string) {
+  const s = system(systemId); const st = s.stories.find(x => x.id === storyId)!;
+  let text = st.text;
+  if (st.seasonal) { text = texts.map.get(st.id) ?? ''; if (!text) { texts.map = await loadSeason(c, true); text = texts.map.get(st.id) ?? ''; } }
+  return { system: s.name, chapter: s.stories.indexOf(st) + 1, title: st.title, text };
+}
+// Seasonal chapters come from the main server per account. Titles are shared, texts stay per call.
+const seasonCache = new Map<string, { at: number; entries: SeasonEntry[] }>();
+async function loadSeason(c: ToolContext, fresh = false) {
+  const key = c.link.owner; const hit = seasonCache.get(key);
+  let entries = hit && !fresh && c.now() - hit.at < 60000 ? hit.entries : undefined;
+  if (!entries) {
+    entries = ((await c.client.call(c.link.session, 'GET', '/api/season')) as { chapters: SeasonEntry[] }).chapters;
+    if (seasonCache.size > 5000) seasonCache.clear();
+    seasonCache.set(key, { at: c.now(), entries });
+  }
+  registerSeason(entries.map(({ text: _text, ...rest }) => rest));
+  return new Map(entries.filter(e => e.text).map(e => [e.id, e.text!]));
+}
 const toUnits = (amount: string, decimals: number) => {
   const [whole, frac = ''] = amount.split('.'); if (frac.length > decimals) throw new ToolError(`Too many decimal places: this token has ${decimals}.`);
   const units = BigInt(whole + frac.padEnd(decimals, '0')); if (units <= 0n) throw new ToolError('Amount must be greater than zero.'); return units.toString();
@@ -69,8 +89,10 @@ async function runSwapTool(name: string, args: Args, c: ToolContext, events: () 
     if (matches.length !== 1) throw new ToolError(matches.length ? 'Several tokens share this symbol; pass the assetId.' : 'Unknown fromToken. Call list_swap_tokens.');
     const token = matches[0]; const destination = assetIds[s.asset];
     if (token.assetId === destination) throw new ToolError(`You already hold ${s.asset}; choose a different source token.`);
-    // Paying again for an asset already reached unlocks nothing.
-    const reached = state(await events()); if (reached.open(s.id)) throw new ToolError(`${s.name} is already open. Call start_expedition, or travel to a closed system.`);
+    // One swap opens one system, only along its route.
+    if (!routeAllowed(s.id, token.assetId)) throw new ToolError(`${s.name} opens only by the route ${routeLabel(s.id)}. Use fromToken ${routes[s.id].from.map(a => assetIds[a]).join(' or ')} (the assetId; NEAR is wNEAR).`);
+    // Paying again unlocks nothing unless a return trip is due.
+    const reached = state(await events()); if (!reached.needs(s.id)) throw new ToolError(`${s.name} is already open and no return trip is due. Call start_expedition, or travel to a closed system.`);
     const pending = store.openQuote(link, destination, now());
     if (pending) throw new ToolError(`An unpaid quote ${pending.quoteId} for this asset is still valid until ${new Date(pending.deadline).toISOString()}. Use it (send its deposit once, then verify_arrival) or wait until it expires. Do not pay twice.`);
     const amount = toUnits(args.amount, token.decimals); let deadline = now() + QUOTE_TTL;
@@ -111,6 +133,7 @@ async function runSwapTool(name: string, args: Args, c: ToolContext, events: () 
       await c.client.call(link.session, 'POST', '/api/events', { eventId: 'mcp-arrival-' + q.quoteId, type: 'arrival', systemId: s.id,
         proof: { depositAddress: q.depositAddress, originAsset: q.originAsset, destinationAsset: q.destinationAsset, amountIn: q.amountIn, amountOut: q.amountOut, minAmountOut: q.minAmountOut } });
     } catch (e) {
+      if (e instanceof MainApiError && e.code === 'route_mismatch') throw new ToolError(`The swap succeeded, but it did not follow the route ${routeLabel(s.id)}, so ${s.name} stays closed. The swapped funds are in this account.`);
       if (e instanceof MainApiError && e.code === 'arrival_unverified') throw new ToolError('The swap succeeded, but the deposit does not match the required single transaction (for example a memo, a split amount or ft_transfer_call was used). The system stays closed; the swapped funds are in this account\'s NEAR Intents balance.');
       throw e;
     }
@@ -124,9 +147,11 @@ export async function runTool(name: string, args: Args, c: ToolContext) {
   const { client, link, now } = c; const session = link.session;
   const events = async () => ((await client.call(session, 'GET', '/api/events')) as { events: Event[] }).events;
   const post = (body: Args) => client.call(session, 'POST', '/api/events', { eventId: eventId(), ...body });
+  const texts = { map: ['list_systems', 'get_journal', 'start_expedition', 'complete_expedition', 'read_story'].includes(name) ? await loadSeason(c, name === 'complete_expedition') : new Map<string, string>() };
+  const chapter = (systemId: string, storyId: string) => chapterOf(c, texts, systemId, storyId);
   switch (name) {
     case 'list_swap_tokens': case 'get_limits': case 'get_swap_quote': case 'verify_arrival': return runSwapTool(name, args, c, events);
-    case 'get_ship': return ((await client.call(session, 'GET', '/api/ship')) as { ship: unknown }).ship;
+    case 'get_ship': { const r = (await client.call(session, 'GET', '/api/ship')) as { ship: unknown }; return { ship: r.ship, level: explorerLevel(await events()) }; }
     case 'set_ship': {
       const ship = { name: String(args.name ?? '').trim(), biography: String(args.biography ?? ''), art: String(args.art ?? '') };
       return ((await client.call(session, 'PUT', '/api/ship', ship)) as { ship: unknown }).ship;
@@ -135,8 +160,8 @@ export async function runTool(name: string, args: Args, c: ToolContext) {
       const st = state(await events());
       return systems.map(s => st.open(s.id)
         ? { systemId: s.id, name: s.name, subtitle: s.subtitle, planet: s.planet, asset: s.asset, region: regions.find(r => r.asset === s.asset)?.name, description: s.description, open: true,
-            chaptersRead: s.stories.filter(x => st.has('story.read', s.id, x.id)).length, chaptersTotal: s.stories.length }
-        : { systemId: s.id, name: s.name, asset: s.asset, assetId: assetIds[s.asset], open: false, howToOpen: `get_swap_quote with systemId "${s.id}", send the deposit, then verify_arrival.` });
+            chaptersRead: s.stories.filter(x => st.has('story.read', s.id, x.id)).length, chaptersTotal: s.stories.length, route: routeLabel(s.id), ...(st.needs(s.id) === 'return' ? { returnTripDue: true } : {}) }
+        : { systemId: s.id, name: s.name, asset: s.asset, assetId: assetIds[s.asset], route: routeLabel(s.id), open: false, howToOpen: `get_swap_quote with systemId "${s.id}", send the deposit, then verify_arrival.` });
     }
     case 'get_journal': {
       const limit = typeof args.limit === 'number' ? Math.min(100, Math.max(1, Math.floor(args.limit))) : 30;
@@ -152,6 +177,7 @@ export async function runTool(name: string, args: Args, c: ToolContext) {
       if (st.active) throw new ToolError(`An expedition is already active in ${system(st.active.systemId).name}. Call complete_expedition.`);
       if (st.unread) throw new ToolError(`A completed chapter in ${system(st.unread.systemId).name} is waiting. Call complete_expedition to read it.`);
       const next = s.stories.find(x => !st.has('story.read', s.id, x.id));
+      if (next && st.needs(s.id) === 'return') throw new ToolError(`Chapter ${s.stories.indexOf(next) + 1} of ${s.name} needs a return trip: get_swap_quote with systemId "${s.id}" (route ${routeLabel(s.id)}, any amount), send the deposit, verify_arrival, then start_expedition again.`);
       if (!next) return { system: s.name, done: true, message: 'All chapters in this system are already unlocked. Travel to another system.' };
       const r = await post({ type: 'expedition.started', systemId: s.id, storyId: next.id }) as { event: Event };
       return { system: s.name, chapter: s.stories.indexOf(next) + 1, readyAt: new Date(r.event.readyAt!).toISOString(), next: 'Call complete_expedition after readyAt.' };
@@ -163,7 +189,7 @@ export async function runTool(name: string, args: Args, c: ToolContext) {
       if (!target) {
         // A retry after a lost response: report the chapter that was just unlocked instead of failing.
         const last = [...list].reverse().find(e => e.type === 'story.read');
-        if (last && st.open(last.systemId) && now() - last.createdAt < 10 * 60000) return { ready: true, alreadyCompleted: true, ...chapter(last.systemId, last.storyId!) };
+        if (last && st.open(last.systemId) && now() - last.createdAt < 10 * 60000) return { ready: true, alreadyCompleted: true, ...(await chapter(last.systemId, last.storyId!)) };
         throw new ToolError('No active expedition. Call start_expedition first.');
       }
       if (!st.open(target.systemId)) throw new ToolError('An expedition started on the website is in progress in a system you have not reached. The owner must finish it on nearverse.space first.');
@@ -178,14 +204,14 @@ export async function runTool(name: string, args: Args, c: ToolContext) {
         // A parallel call may have done the same writes; succeed if the chapter is now read.
         if (!(e instanceof MainApiError && e.status === 409) || !state(await events()).has('story.read', target.systemId, target.storyId!)) throw e;
       }
-      return { ready: true, ...chapter(target.systemId, target.storyId!) };
+      return { ready: true, ...(await chapter(target.systemId, target.storyId!)) };
     }
     case 'read_story': {
       const s = system(args.systemId); const st = state(await events());
       if (!st.open(s.id)) throw locked(s);
       if (typeof args.storyId !== 'string' || !s.stories.some(x => x.id === args.storyId)) throw new ToolError('Unknown storyId for this system.');
       if (!st.has('story.read', s.id, args.storyId)) throw new ToolError('This chapter is not unlocked yet.');
-      return chapter(s.id, args.storyId);
+      return await chapter(s.id, args.storyId);
     }
     default: throw new ToolError('Unknown tool.');
   }

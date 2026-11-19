@@ -10,6 +10,7 @@ export function openStore(path = ':memory:') {
     CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, owner TEXT NOT NULL, expires INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, owner TEXT NOT NULL, eventId TEXT NOT NULL, type TEXT NOT NULL, systemId TEXT NOT NULL, storyId TEXT, createdAt INTEGER NOT NULL, payload TEXT NOT NULL, fingerprint TEXT NOT NULL, operation TEXT, UNIQUE(owner,eventId), UNIQUE(operation));
     CREATE TABLE IF NOT EXISTS journal_revisions (owner TEXT PRIMARY KEY, revision INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS season_chapters (id TEXT PRIMARY KEY, systemId TEXT NOT NULL, releaseAt TEXT NOT NULL, title TEXT NOT NULL, text TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS ships (owner TEXT PRIMARY KEY, name TEXT NOT NULL, biography TEXT NOT NULL, art TEXT NOT NULL, updatedAt INTEGER NOT NULL);
     CREATE INDEX IF NOT EXISTS events_owner ON events(owner,seq); PRAGMA user_version = 2;`);
   return db;

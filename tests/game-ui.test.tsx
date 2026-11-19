@@ -52,12 +52,13 @@ describe('English accessible game UI', () => {
     await guest();
     const map = screen.getByRole('region', { name: 'Atlas of passage threads' });
     expect(within(map).getAllByRole('button').every(b => /Closed$/.test(b.textContent ?? ''))).toBe(true);
-    expect(screen.getByText(/This system is closed\. Swap any amount into NEAR/)).toBeTruthy();
+    const closed = (re: RegExp) => screen.getByText((_, el) => el?.tagName === 'P' && re.test(el.textContent ?? ''));
+    expect(closed(/This system is closed\. Route: any of .* → NEAR/)).toBeTruthy();
     expect(screen.queryByText(/A ring of greenhouses/)).toBeNull();
     expect(screen.queryByText(/Botanist Ruta/)).toBeNull();
     fireEvent.click(within(map).getByRole('button', { name: /Basalt/ }));
     expect(document.activeElement?.id).toBe('system-heading');
-    expect(screen.getByText(/This system is closed\. Swap any amount into BTC/)).toBeTruthy();
+    expect(closed(/This system is closed\. Route: NEAR → BTC/)).toBeTruthy();
     expect(screen.queryByRole('button', { name: /Practice arrival/ })).toBeNull();
   });
   it('renders imported biography as inert text and preserves ship settings after remount', async () => {

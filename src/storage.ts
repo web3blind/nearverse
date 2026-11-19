@@ -1,5 +1,6 @@
 import { openDB, type IDBPDatabase } from 'idb';
 import { getSystem, systems } from './world';
+import { arrivalNeeded, isOpen, returnPending } from './rules';
 
 export type GameMode = 'real' | 'preview';
 export interface Scope { mode: GameMode; account: string | null }
@@ -68,14 +69,16 @@ export function validateSave(input: unknown, expectedScope: Scope): GameSave {
   return { version: 1, scope: { mode: scope.mode, account: scope.account }, ship: { name: text(ship.name, 60), biography: text(ship.biography, 2000, true), art: ship.art as Ship['art'] }, events, queue: scope.mode === 'preview' ? [] : [...new Set(value.queue as string[])] };
 }
 export function validateSequence(events: GameEvent[]): void {
-  const visited = new Set<string>();
+  const seen: GameEvent[] = [];
   const started = new Set<string>();
   const completed = new Set<string>();
   for (const event of events) {
-    if (event.type === 'visit' || event.type === 'arrival') { visited.add(event.systemId); continue; }
+    if (event.type === 'visit' || event.type === 'arrival') { seen.push(event); continue; }
     const system = getSystem(event.systemId);
     const index = system.stories.findIndex(story => story.id === event.storyId);
-    if (![...visited].some(id => getSystem(id).asset === system.asset) || (index > 0 && !completed.has(system.stories[index - 1].id))) throw new Error('Invalid expedition order');
+    const opened = isOpen(system, seen.map(e => ({ ...e, type: e.type === 'visit' ? 'arrival' : e.type })));
+    seen.push(event);
+    if (!opened || (index > 0 && !completed.has(system.stories[index - 1].id))) throw new Error('Invalid expedition order');
     if (event.type === 'expedition.started') {
       if (completed.has(event.storyId!) || started.has(event.storyId!)) throw new Error('Expedition already started');
       if ([...started].some(id => !completed.has(`finished:${id}`))) throw new Error('Complete the active expedition first');
@@ -201,7 +204,9 @@ export function progress(save: GameSave, systemId: string) {
   const completed = new Set(save.events.filter(event => event.type === 'story.read').map(event => event.storyId));
   const next = system.stories.find(story => !completed.has(story.id));
   const active = next ? save.events.find(event => event.type === 'expedition.started' && event.storyId === next.id) : undefined;
-  return { visited: save.events.some(event => ['visit', 'arrival'].includes(event.type) && getSystem(event.systemId).asset === system.asset), completed, next, active };
+  const events = save.events.map(e => ({ ...e, type: e.type === 'visit' ? 'arrival' : e.type }));
+  const nextIndex = next ? system.stories.indexOf(next) : -1;
+  return { visited: isOpen(system, events), completed, next, active, returnNeeded: nextIndex >= 0 && !active && returnPending(system, nextIndex, events), arrival: arrivalNeeded(system, events) };
 }
 export function visitedCount(save: GameSave): number {
   return systems.filter(system => save.events.some(event => ['visit', 'arrival'].includes(event.type) && event.systemId === system.id)).length;

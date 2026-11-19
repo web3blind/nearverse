@@ -1,5 +1,5 @@
 import { mkdirSync, chmodSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { createApp } from './app';
 import express from 'express';
 import { frontend } from './frontend';
@@ -24,9 +24,9 @@ if (command === 'restore') {
     // Deployment diagnostics deliberately exclude URL/query/header/body values.
     app.use((req, res, next) => {
       const started = performance.now();
-      const routes = new Set(['/api/health', '/api/auth/session', '/api/events', '/api/journal', '/']);
+      const routes = new Set(['/api/health', '/api/auth/session', '/api/events', '/api/journal', '/api/ship', '/api/season', '/']);
       const route = routes.has(req.path) ? req.path : '[other]';
-      const method = new Set(['GET', 'HEAD', 'POST', 'DELETE', 'OPTIONS']).has(req.method) ? req.method : '[other]';
+      const method = new Set(['GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'OPTIONS']).has(req.method) ? req.method : '[other]';
       res.once('finish', () => {
         const entry = JSON.stringify({ time: new Date().toISOString(), event: 'http_response', method, route, status: res.statusCode, durationMs: Math.round(performance.now() - started) });
         if (res.statusCode >= 500) console.error(entry); else console.log(entry);
@@ -34,7 +34,7 @@ if (command === 'restore') {
       next();
     });
     if(command === 'preview') app.use(frontend());
-    app.use(createApp({ origin, db, agentLinkSecret: process.env.AGENT_LINK_SECRET }));
+    app.use(createApp({ origin, db, agentLinkSecret: process.env.AGENT_LINK_SECRET, seasonsFile: resolve(process.env.SEASONS_FILE || join(dir, 'seasons.json')) }));
     const server = app.listen(port, '127.0.0.1', () => console.log(`History backend listening on 127.0.0.1:${port}`));
     for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => server.close(() => { db.close(); process.exit(0); }));
   }

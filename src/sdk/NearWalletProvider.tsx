@@ -9,7 +9,7 @@ import type { WidgetConfig } from '@aurora-is-near/intents-swap-widget/types';
 export function NearWalletProvider({config, children, connectRequest = 0, preview = false}:{config:Partial<WidgetConfig>; children:ReactNode; connectRequest?:number; preview?:boolean}) {
   const connectorRef=useRef<NearConnector|null>(null);
   const [connector,setConnector] = useState<NearConnector>();
-  useEffect(()=>{if(!preview && !connector){connectorRef.current ??= new NearConnector({network:'mainnet', autoConnect:false, features:{signMessage:true,signAndSendTransactions:true,signInWithoutAddKey:true}});setConnector(connectorRef.current);}},[preview,connector]);
+  useEffect(()=>{if(!preview && !connector){connectorRef.current ??= new NearConnector({network:'mainnet', autoConnect:false, features:{signMessage:true,signAndSendTransactions:true,signInWithoutAddKey:true},...(typeof localStorage!=='undefined'&&localStorage.getItem('nearverse:debug-wallet')==='1'?{logger:console}:{})});setConnector(connectorRef.current);}},[preview,connector]);
   const [wallet,setWallet] = useState<NearWalletBase>();
   const [account,setAccount] = useState<string>();
   const [error,setError] = useState('');
@@ -37,7 +37,7 @@ export function NearWalletProvider({config, children, connectRequest = 0, previe
     const version = generation.current;
     void connector.getConnectedWallet().then(({wallet:next,accounts})=>{
       if(active && version===generation.current){setWallet(next);setAccount(accounts[0]?.accountId);}
-    }).catch(()=>{/* No stored connection. Never connect or sign to restore it. */});
+    }).catch((e:unknown)=>{/* No stored connection. Never connect or sign to restore it. */console.info('NearVerse: wallet session not restored:',e instanceof Error?e.message:String(e));});
     return ()=>{active=false;connector.off('selector:walletsChanged',refresh);connector.off('wallet:signIn',signedIn);connector.off('wallet:signOut',signedOut);};
   },[connector]);
   useEffect(()=>{

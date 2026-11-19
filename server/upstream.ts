@@ -2,7 +2,9 @@ import type { FinalExecutionOutcome } from '@near-js/types';
 
 export interface ArrivalProof { depositAddress: string; depositMemo?: string; originAsset: string; destinationAsset: string; amountIn: string; amountOut: string; minAmountOut: string }
 export interface ArrivalTarget { systemId: string; assetId: string }
-export type ArrivalVerifier = (owner: string, target: ArrivalTarget, proof: ArrivalProof) => Promise<boolean>;
+/** `quotedBefore`: also require that the 1Click quote was issued before this moment (swaps paid under older rules). */
+/** `route_mismatch`: the swap is fully verified, but its quote is not older than `quotedBefore`. Any other failure is `false`. */
+export type ArrivalVerifier = (owner: string, target: ArrivalTarget, proof: ArrivalProof, options?: { quotedBefore?: number }) => Promise<boolean | 'route_mismatch'>;
 const NEAR_RPC = 'https://rpc.mainnet.near.org';
 const positive = (value: unknown): value is string => typeof value === 'string' && /^[1-9][0-9]{0,77}$/.test(value);
 const account = (value: string) => value.length >= 2 && value.length <= 64 && /^[a-z0-9]+(?:[._-][a-z0-9]+)*$/.test(value);
@@ -64,7 +66,7 @@ async function verifyNearDeposit(owner: string, proof: ArrivalProof, hashes: unk
     && args.amount === proof.amountIn && action.FunctionCall.deposit === '1';
 }
 
-export const verifyArrival: ArrivalVerifier = async (owner, target, proof) => {
+export const verifyArrival: ArrivalVerifier = async (owner, target, proof, options) => {
   try {
     if (!positive(proof.amountIn) || !positive(proof.amountOut) || !positive(proof.minAmountOut)
       || typeof proof.depositAddress !== 'string' || proof.depositAddress.length > 256
@@ -87,8 +89,13 @@ export const verifyArrival: ArrivalVerifier = async (owner, target, proof) => {
       && positive(details?.amountOut) && BigInt(details.amountOut) >= BigInt(proof.minAmountOut)
       && quote.depositAddress === proof.depositAddress
       && (quote.depositMemo || '') === (proof.depositMemo || ''))) return false;
-    if (request.depositType === 'INTENTS') return request.refundType === 'INTENTS';
-    if (request.depositType !== 'ORIGIN_CHAIN' || request.refundType !== 'ORIGIN_CHAIN') return false;
-    return await verifyNearDeposit(owner, proof, details.originChainTxHashes, signal);
+    let ok: boolean;
+    if (request.depositType === 'INTENTS') ok = request.refundType === 'INTENTS';
+    else if (request.depositType !== 'ORIGIN_CHAIN' || request.refundType !== 'ORIGIN_CHAIN') ok = false;
+    else ok = await verifyNearDeposit(owner, proof, details.originChainTxHashes, signal);
+    if (!ok || options?.quotedBefore === undefined) return ok;
+    const at = Date.parse(result?.quoteResponse?.timestamp);
+    // Only a fully verified swap with a readable, recent quote is a final route mismatch.
+    return Number.isNaN(at) ? false : at < options.quotedBefore ? true : 'route_mismatch';
   } catch { return false; }
 };

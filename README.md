@@ -16,7 +16,7 @@ Third-party foundations include React, Vite, Aurora Intents core and the support
 
 1. Open the live application. Without a wallet, the atlas shows only system names and assets; there is no swap-free mode.
 2. Connect a NEAR wallet and sign in (a text message, not a transaction). Select a closed system from the keyboard-accessible destination list.
-3. In the Converter, swap a small amount (any amount is accepted) into that system's asset. Read the financial safety section first: a quote or a signed deposit is not proof of settlement, and real swaps use your own funds.
+3. In the Converter, swap a small amount (any amount is accepted) along that system's route, for example NEAR → USDT for Harbor. One swap opens one system. Chapter 2 is a two-hour expedition, chapter 3 needs a return swap along the same route, and new seasonal chapters arrive weekly. The ship panel shows an explorer level that grows with chapters read, not with money. Read the financial safety section first: a quote or a signed deposit is not proof of settlement, and real swaps use your own funds.
 4. After the server verifies the arrival, the system's description and first chapter unlock. Start an expedition, reload, and complete it after its timer to read the chapter.
 5. For agents: open [nearverse.space/mcp/](https://nearverse.space/mcp/), set limits, sign, and give the token to an MCP client. See "AI agents (MCP)" below and [llms.txt](https://nearverse.space/llms.txt).
 
